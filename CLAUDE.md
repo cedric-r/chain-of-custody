@@ -61,10 +61,18 @@ require_once 'src/ChainOfCustody.php';
 $coc = new ChainOfCustody('config.php');
 
 // Sign a file (TIFF, JPEG, or PNG)
-$hash = $coc->createSignature('/path/to/image.tif', 'Alice');
+$hash = $coc->createSignature('/path/to/image.tif', 1);       // userId
 
 // Sign and return binary data without writing to disk
-$signedData = $coc->createSignedFile('/path/to/image.jpg', 'Bob');
+$signedData = $coc->createSignedFile('/path/to/image.jpg', 1); // userId
+
+// Update chain of custody (original signed + modified file)
+$result = $coc->updateChainOfCustody(
+    '/path/to/original-signed.tif',
+    '/path/to/modified.tif',
+    1                                     // userId — must match original signer
+);
+$signedModified = $result['data'];
 
 // Verify
 $result = $coc->checkSignature('/path/to/image.tif');
@@ -90,46 +98,29 @@ foreach ($chain['chain'] as $link) {
 
 ```
 demo/
-├── sign.php      # Sign any file:   php demo/sign.php <file> → <base>-signed.<ext>
+├── sign.php      # Sign any file:   php demo/sign.php <file>
 ├── check.php     # Verify a signed file + show chain
-├── update.php    # Re-sign a signed file: <base>-signed- signed.<ext>
-│
-├── sign-jpg.php  # Quick demos with hardcoded paths (no arguments needed)
-├── check-jpg.php
-├── update-jpg.php
-├── sign-png.php
-├── check-png.php
-├── update-png.php
+├── update.php    # Two-file update: php demo/update.php <signed> <modified>
 │
 ├── image.jpg     # Sample images shipped with the repo
 ├── image.png
 └── image.tif
 ```
 
-The three main scripts (`sign.php`, `check.php`, `update.php`) accept a file
-path as their first argument and work with any supported format (JPEG, PNG,
-TIFF). The format is auto-detected from the file content.
+The three main scripts work with any supported format (JPEG, PNG, TIFF),
+auto-detected from the file content.
 
 Examples:
 
 ```bash
-# Sign a JPEG
+# Sign a file
 php demo/sign.php demo/image.jpg        # → demo/image-signed.jpg
-
-# Sign a PNG
-php demo/sign.php demo/image.png        # → demo/image-signed.png
-
-# Sign a TIFF
-php demo/sign.php demo/image.tif        # → demo/image-signed.tif
 
 # Verify a signed file and show its chain of custody
 php demo/check.php demo/image-signed.jpg
 
-# Re-sign an already-signed file
-php demo/update.php demo/image-signed.jpg  # → demo/image-signed-signed.jpg
-
-# Quick demo without typing arguments (uses image.jpg)
-php demo/sign-jpg.php
-php demo/check-jpg.php
-php demo/update-jpg.php
+# Update chain of custody: verify original, sign modified, link records
+php demo/sign.php demo/image.jpg                          # first sign it
+# edit demo/image-signed.jpg in an image editor
+php demo/update.php demo/image-signed.jpg demo/image-signed.jpg  # → demo/image-signed-updated.jpg
 ```

@@ -3,9 +3,9 @@
 declare(strict_types=1);
 
 /**
- * Chain of Custody — Database store for signature records.
+ * Chain of Custody — Database store for signature records and users.
  *
- * Wraps PDO access to the chain_of_custody_signatures table.
+ * Wraps PDO access to the chain_of_custody_signatures and users tables.
  */
 
 class SignatureStore
@@ -32,27 +32,44 @@ class SignatureStore
         ]);
     }
 
+    // ------------------------------------------------------------------
+    //  Signature records
+    // ------------------------------------------------------------------
+
     /**
      * Store a new signature record.
      *
+     * Looks up the user's display name from the users table and stores it
+     * denormalized in author_name.
+     *
      * @param  string     $hash        SHA-256 hex digest.
-     * @param  string     $author      Name of the author.
+     * @param  int        $userId      ID of the user creating the signature.
      * @param  string     $fileName    Original file name.
      * @param  int|null   $previousId  ID of the previous signature in the chain, or NULL.
      * @return int                     Auto-increment ID of the new record.
      */
-    public function store(string $hash, string $author, string $fileName, ?int $previousId): int
+    public function store(string $hash, int $userId, string $fileName, ?int $previousId): int
     {
         $stmt = $this->pdo->prepare(
-            'INSERT INTO chain_of_custody_signatures (signature_hash, author_name, file_name, previous_id)
-             VALUES (:hash, :author, :file_name, :previous_id)'
+            'SELECT name FROM users WHERE id = :id'
+        );
+        $stmt->execute([':id' => $userId]);
+        $user = $stmt->fetch();
+
+        $authorName = $user !== false ? $user['name'] : 'Unknown';
+
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO chain_of_custody_signatures
+                 (signature_hash, author_name, file_name, previous_id, user_id)
+             VALUES (:hash, :author, :file_name, :previous_id, :user_id)'
         );
 
         $stmt->execute([
             ':hash'        => $hash,
-            ':author'      => $author,
+            ':author'      => $authorName,
             ':file_name'   => $fileName,
             ':previous_id' => $previousId,
+            ':user_id'     => $userId,
         ]);
 
         return (int) $this->pdo->lastInsertId();
@@ -67,10 +84,12 @@ class SignatureStore
     public function findByHash(string $hash): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, signature_hash, author_name, file_name, previous_id, created_at
-             FROM chain_of_custody_signatures
-             WHERE signature_hash = :hash
-             ORDER BY id DESC
+            'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
+                    s.previous_id, s.created_at, u.email
+             FROM chain_of_custody_signatures s
+             LEFT JOIN users u ON u.id = s.user_id
+             WHERE s.signature_hash = :hash
+             ORDER BY s.id DESC
              LIMIT 1'
         );
 
@@ -96,9 +115,11 @@ class SignatureStore
 
         while ($nextId !== null) {
             $stmt = $this->pdo->prepare(
-                'SELECT id, signature_hash, author_name, file_name, previous_id, created_at
-                 FROM chain_of_custody_signatures
-                 WHERE id = :id
+                'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
+                        s.previous_id, s.created_at, u.email
+                 FROM chain_of_custody_signatures s
+                 LEFT JOIN users u ON u.id = s.user_id
+                 WHERE s.id = :id
                  LIMIT 1'
             );
 
@@ -114,5 +135,119 @@ class SignatureStore
         }
 
         return $chain;
+    }
+
+    // ------------------------------------------------------------------
+    //  User accounts
+    // ------------------------------------------------------------------
+
+    /**
+     * Create a new user account.
+     *
+     * @param  string  $email         User's email address.
+     * @param  string  $passwordHash  bcrypt hash of the password.
+     * @param  string  $name          Display name.
+     * @param  string  $token         Email verification token.
+     * @param  string  $tokenExpires  ISO datetime when the token expires.
+     * @return int                    New user ID.
+     */
+    public function createUser(
+        string $email,
+        string $passwordHash,
+        string $name,
+        string $token,
+        string $tokenExpires,
+    ): int {
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO users (email, password_hash, name, verification_token, verification_token_expires)
+             VALUES (:email, :password_hash, :name, :token, :token_expires)'
+        );
+
+        $stmt->execute([
+            ':email'          => $email,
+            ':password_hash'  => $passwordHash,
+            ':name'           => $name,
+            ':token'          => $token,
+            ':token_expires'  => $tokenExpires,
+        ]);
+
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    /**
+     * Find a user by email address.
+     *
+     * @return array|null  User row or NULL if not found.
+     */
+    public function findUserByEmail(string $email): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, email, password_hash, name, email_verified, created_at
+             FROM users
+             WHERE email = :email
+             LIMIT 1'
+        );
+
+        $stmt->execute([':email' => $email]);
+
+        $row = $stmt->fetch();
+
+        return $row !== false ? $row : null;
+    }
+
+    /**
+     * Find a user by their email verification token.
+     *
+     * @return array|null  User row or NULL if not found / expired.
+     */
+    public function findUserByVerificationToken(string $token): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, email, name, email_verified, verification_token_expires
+             FROM users
+             WHERE verification_token = :token
+             LIMIT 1'
+        );
+
+        $stmt->execute([':token' => $token]);
+
+        $row = $stmt->fetch();
+
+        return $row !== false ? $row : null;
+    }
+
+    /**
+     * Mark a user's email as verified and clear the verification token.
+     */
+    public function verifyUser(int $userId): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE users
+             SET email_verified = 1, verification_token = NULL, verification_token_expires = NULL
+             WHERE id = :id'
+        );
+
+        $stmt->execute([':id' => $userId]);
+    }
+
+    /**
+     * Find a user by their ID.
+     *
+     * @return array|null  User row or NULL if not found.
+     */
+    public function findUserById(int $userId): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT id, email, name, email_verified, created_at
+             FROM users
+             WHERE id = :id
+             LIMIT 1'
+        );
+
+        $stmt->execute([':id' => $userId]);
+
+        $row = $stmt->fetch();
+
+        return $row !== false ? $row : null;
     }
 }

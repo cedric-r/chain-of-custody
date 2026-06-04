@@ -6,20 +6,22 @@ declare(strict_types=1);
  * Chain of Custody — Main library API.
  *
  * Provides three high-level operations for image file authentication:
- *   - createSignature()    — sign a file on disk
- *   - createSignedFile()   — sign and return signed binary data
- *   - checkSignature()     — verify that the file matches its stored hash
- *   - checkChainOfCustody() — verify and return the linked signature chain
+ *   - createSignature()      — sign a file on disk
+ *   - createSignedFile()     — sign and return signed binary data
+ *   - checkSignature()       — verify that the file matches its stored hash
+ *   - checkChainOfCustody()  — verify and return the linked signature chain
+ *   - updateChainOfCustody() — verify original, sign modified, link records
  *
  * Automatically detects the image format (TIFF, JPEG, …) and delegates
  * to the appropriate format handler.
  *
  * Usage:
  *   $coc = new ChainOfCustody('/path/to/config.php');
- *   $hash = $coc->createSignature('/path/to/image.tif', 'Alice');
- *   $signed = $coc->createSignedFile('/path/to/image.jpg', 'Bob');
+ *   $hash   = $coc->createSignature('/path/to/image.tif', 1);     // userId 1
+ *   $signed = $coc->createSignedFile('/path/to/image.jpg', 1);    // userId 1
  *   $result = $coc->checkSignature('/path/to/image.tif');
- *   $chain = $coc->checkChainOfCustody('/path/to/image.tif');
+ *   $chain  = $coc->checkChainOfCustody('/path/to/image.tif');
+ *   $update = $coc->updateChainOfCustody('/path/to/original.tif', '/path/to/modified.jpg', 1);
  */
 
 require_once __DIR__ . '/ImageSignatureHandler.php';
@@ -77,16 +79,16 @@ class ChainOfCustody
      *
      * The file is modified in-place to embed the signature.
      *
-     * @param  string  $filePath    Path to the image file.
-     * @param  string  $authorName  Name of the person creating the signature.
-     * @return string               SHA-256 hex digest that was stored.
+     * @param  string  $filePath  Path to the image file.
+     * @param  int     $userId    ID of the user creating the signature.
+     * @return string             SHA-256 hex digest that was stored.
      *
      * @throws ChainOfCustodyException  On I/O, format detection, or TIFF parse failure.
      */
-    public function createSignature(string $filePath, string $authorName): string
+    public function createSignature(string $filePath, int $userId): string
     {
         $data   = $this->readFile($filePath);
-        $result = $this->signData($data, basename($filePath), $authorName);
+        $result = $this->signData($data, basename($filePath), $userId);
         $this->writeFile($filePath, $result['data']);
 
         return $result['hash'];
@@ -99,16 +101,16 @@ class ChainOfCustody
      * The signed data is returned as a binary string, and the signature
      * record is still persisted in the database.
      *
-     * @param  string  $filePath    Path to the unsigned image file.
-     * @param  string  $authorName  Name of the person creating the signature.
-     * @return string               Signed image file binary data.
+     * @param  string  $filePath  Path to the unsigned image file.
+     * @param  int     $userId    ID of the user creating the signature.
+     * @return string             Signed image file binary data.
      *
      * @throws ChainOfCustodyException  On I/O, format detection, or parse failure.
      */
-    public function createSignedFile(string $filePath, string $authorName): string
+    public function createSignedFile(string $filePath, int $userId): string
     {
         $data   = $this->readFile($filePath);
-        $result = $this->signData($data, basename($filePath), $authorName);
+        $result = $this->signData($data, basename($filePath), $userId);
 
         return $result['data'];
     }
@@ -184,6 +186,78 @@ class ChainOfCustody
         ];
     }
 
+    /**
+     * Update the chain of custody by signing a modified file.
+     *
+     * Verifies that the original signed file is authentic and that the
+     * given user is the same user who created the original signature,
+     * then signs the modified file and links the new signature to the
+     * original record in the database so the chain reads:
+     * … → original → modified.
+     *
+     * The modified file is signed as a first-time signature (any existing
+     * signature on the modified file is ignored — pass the unsigned
+     * modified file, not a separately-signed copy).
+     *
+     * @param  string  $originalSignedPath  Path to the authentic, signed original file.
+     * @param  string  $modifiedPath        Path to the (unsigned) modified file.
+     * @param  int     $userId              ID of the user — must match the original signature's user.
+     * @return array{
+     *     data: string,
+     *     hash: string,
+     *     original: array|null,
+     * }
+     *
+     * @throws ChainOfCustodyException  When the original file is not authentic,
+     *                                  has no database record, the user does not
+     *                                  match the original signer, or on I/O failure.
+     */
+    public function updateChainOfCustody(
+        string $originalSignedPath,
+        string $modifiedPath,
+        int $userId
+    ): array {
+        // 1. Verify the original signed file
+        $checkResult = $this->checkSignature($originalSignedPath);
+
+        if (! $checkResult['authenticated']) {
+            throw new ChainOfCustodyException(
+                'Cannot update: the original signed file is not authentic or has no valid signature.'
+            );
+        }
+
+        $originalRecord = $checkResult['signature'];
+        if ($originalRecord === null) {
+            throw new ChainOfCustodyException(
+                'Cannot update: no database record found for the original signature.'
+            );
+        }
+
+        // 2. Verify the user matches the original signature's owner
+        if ((int) $originalRecord['user_id'] !== $userId) {
+            throw new ChainOfCustodyException(
+                'Cannot update: the original signature belongs to a different user.'
+            );
+        }
+
+        // 3. Read and sign the modified file as a first-time signature
+        $data   = $this->readFile($modifiedPath);
+        $handler = $this->detectHandler($data);
+
+        $newHash      = hash('sha256', $data);
+        $unsignedInfo = $handler->getUnsignedInfo($data);
+        $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
+
+        // 4. Store with previous_id linking to the original record
+        $this->store->store($newHash, $userId, basename($modifiedPath), (int) $originalRecord['id']);
+
+        return [
+            'data'     => $signedData,
+            'hash'     => $newHash,
+            'original' => $originalRecord,
+        ];
+    }
+
     // ------------------------------------------------------------------
     //  Internal helpers
     // ------------------------------------------------------------------
@@ -193,7 +267,7 @@ class ChainOfCustody
      *
      * @return array{data: string, hash: string}
      */
-    private function signData(string $data, string $fileName, string $authorName): array
+    private function signData(string $data, string $fileName, int $userId): array
     {
         $handler = $this->detectHandler($data);
 
@@ -221,7 +295,7 @@ class ChainOfCustody
             $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
         }
 
-        $this->store->store($newHash, $authorName, $fileName, $previousId);
+        $this->store->store($newHash, $userId, $fileName, $previousId);
 
         return ['data' => $signedData, 'hash' => $newHash];
     }

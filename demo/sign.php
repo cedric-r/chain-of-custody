@@ -21,6 +21,54 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 
 // ---------------------------------------------------------------------------
+// Helper — find or create a demo user in the database
+// ---------------------------------------------------------------------------
+
+function getDemoUserId(string $configPath): ?int
+{
+    /** @var array<string, mixed> $config */
+    $config = require $configPath;
+
+    if (! is_array($config)) {
+        return null;
+    }
+
+    $host    = $config['host'] ?? '127.0.0.1';
+    $port    = $config['port'] ?? 3306;
+    $dbname  = $config['dbname'] ?? '';
+    $charset = $config['charset'] ?? 'utf8mb4';
+
+    $dsn  = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=%s', $host, $port, $dbname, $charset);
+    $pdo  = new PDO($dsn, $config['username'] ?? '', $config['password'] ?? '', [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    ]);
+
+    // Look for an existing demo user
+    $stmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+    $stmt->execute([':email' => 'demo@example.com']);
+    $row = $stmt->fetch();
+
+    if ($row !== false) {
+        return (int) $row['id'];
+    }
+
+    // Create a demo user
+    $hash = password_hash('demo', PASSWORD_DEFAULT);
+    $stmt = $pdo->prepare(
+        'INSERT INTO users (email, password_hash, name, email_verified)
+         VALUES (:email, :password_hash, :name, 1)'
+    );
+    $stmt->execute([
+        ':email'         => 'demo@example.com',
+        ':password_hash' => $hash,
+        ':name'          => 'Demo User',
+    ]);
+
+    return (int) $pdo->lastInsertId();
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -56,6 +104,18 @@ if (! empty($pathInfo['extension'])) {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap demo user
+// ---------------------------------------------------------------------------
+
+$demoUserId = getDemoUserId($configPath);
+if ($demoUserId === null) {
+    fwrite(STDERR, "Failed to find or create demo user.\n");
+    exit(1);
+}
+
+echo "Demo user ID: {$demoUserId}\n\n";
+
+// ---------------------------------------------------------------------------
 // Sign
 // ---------------------------------------------------------------------------
 
@@ -68,7 +128,7 @@ echo "Input:  {$inputPath}\n";
 echo "Output: {$outputPath}\n\n";
 
 echo "Signing… ";
-$signedData = $coc->createSignedFile($inputPath, 'Demo User');
+$signedData = $coc->createSignedFile($inputPath, $demoUserId);
 file_put_contents($outputPath, $signedData);
 echo "done.\n";
 printf("Signed file: %d bytes\n\n", strlen($signedData));

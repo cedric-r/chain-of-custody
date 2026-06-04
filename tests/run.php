@@ -24,7 +24,7 @@ require_once __DIR__ . '/../src/SignatureStore.php';
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 
 // Paths
-const ORIGINAL_TIF = __DIR__ . '/../image.tif';
+const ORIGINAL_TIF = __DIR__ . '/../demo/image.tif';
 const TEST_TIF     = __DIR__ . '/test.tif';
 
 // ---------------------------------------------------------------------------
@@ -154,6 +154,25 @@ function copyTif(): string
 }
 
 /**
+ * Copy the test TIFF and flip one byte so the content differs.
+ * The result is a different file than the original — useful as a
+ * "modified" file in updateChainOfCustody tests.
+ */
+function copyModifiedTif(): string
+{
+    $src = ORIGINAL_TIF;
+    $dst = __DIR__ . '/test_modified.tif';
+    if (! copy($src, $dst)) {
+        throw new RuntimeException("Cannot copy {$src} to {$dst}");
+    }
+    $data = file_get_contents($dst);
+    $data[777] = chr(ord($data[777]) ^ 0xFF);
+    file_put_contents($dst, $data);
+
+    return $dst;
+}
+
+/**
  * Build a minimal valid JPEG file for marker-scanning tests.
  *
  * Structure: SOI + APP1 + SOF0 + DHT + SOS + minimal scan data + EOI
@@ -213,6 +232,14 @@ function cleanup(): void
 {
     if (is_file(TEST_TIF)) {
         unlink(TEST_TIF);
+    }
+    $modified = __DIR__ . '/test_modified.tif';
+    if (is_file($modified)) {
+        unlink($modified);
+    }
+    $signed = __DIR__ . '/test_signed.tif';
+    if (is_file($signed)) {
+        unlink($signed);
     }
 }
 
@@ -878,10 +905,22 @@ if (! $dbAvailable) {
     skip('checkSignature (pass)', 'No DB');
     skip('checkSignature (tampered)', 'No DB');
     skip('checkChainOfCustody', 'No DB');
+    skip('updateChainOfCustody', 'No DB');
     skip('handler detection', 'No DB');
 } else {
     // Clean test table
     $testPdo->exec('DELETE FROM chain_of_custody_signatures');
+    $testPdo->exec('DELETE FROM users');
+
+    // Create test users
+    $hash   = password_hash('test', PASSWORD_DEFAULT);
+    $stmt   = $testPdo->prepare(
+        'INSERT INTO users (email, password_hash, name, email_verified) VALUES (:email, :pass, :name, 1)'
+    );
+    $stmt->execute([':email' => 'alice@test.local', ':pass' => $hash, ':name' => 'Alice']);
+    $aliceId = (int) $testPdo->lastInsertId();
+    $stmt->execute([':email' => 'bob@test.local', ':pass' => $hash, ':name' => 'Bob']);
+    $bobId = (int) $testPdo->lastInsertId();
 
     // Create a fresh ChainOfCustody instance
     $coc = new ChainOfCustody(__DIR__ . '/config.php');
@@ -893,10 +932,10 @@ if (! $dbAvailable) {
 
     echo "── createSignature (first-time)\n";
 
-    test('createSignature returns a valid SHA-256 hash', function () use ($coc) {
+    test('createSignature returns a valid SHA-256 hash', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $hash = $coc->createSignature($path, 'Alice');
+            $hash = $coc->createSignature($path, $aliceId);
             $h = new TiffSignatureHandler();
             assertTrue($h->isValidHash($hash), 'Should return a valid SHA-256 hex string');
         } finally {
@@ -906,10 +945,10 @@ if (! $dbAvailable) {
         }
     });
 
-    test('createSignature produces a file with a CoC signature tag', function () use ($coc) {
+    test('createSignature produces a file with a CoC signature tag', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
+            $coc->createSignature($path, $aliceId);
             $data = file_get_contents($path);
             $tiff = new TiffSignatureHandler();
             $info = $tiff->find($data);
@@ -921,7 +960,7 @@ if (! $dbAvailable) {
         }
     });
 
-    test('createSignature stores the record in the database', function () use ($testPdo, $coc) {
+    test('createSignature stores the record in the database', function () use ($testPdo, $coc, $aliceId) {
         $path = copyTif();
         try {
             // Unique hash via one modified byte
@@ -929,7 +968,7 @@ if (! $dbAvailable) {
             $data[100] = chr(ord($data[100]) ^ 0x01);
             file_put_contents($path, $data);
 
-            $hash = $coc->createSignature($path, 'Alice');
+            $hash = $coc->createSignature($path, $aliceId);
 
             $stmt   = $testPdo->prepare('SELECT id FROM chain_of_custody_signatures WHERE signature_hash = :hash');
             $stmt->execute([':hash' => $hash]);
@@ -946,10 +985,10 @@ if (! $dbAvailable) {
 
     echo "\n── createSignedFile\n";
 
-    test('createSignedFile returns binary data (not a hash string)', function () use ($coc) {
+    test('createSignedFile returns binary data (not a hash string)', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $signed = $coc->createSignedFile($path, 'Alice');
+            $signed = $coc->createSignedFile($path, $aliceId);
             assertIsString($signed, 'Should return a string');
             assertTrue(strlen($signed) > 100, 'Should contain substantial binary data');
             assertTrue(strlen($signed) > strlen(file_get_contents($path)),
@@ -961,13 +1000,13 @@ if (! $dbAvailable) {
         }
     });
 
-    test('createSignedFile does NOT modify the original file', function () use ($coc) {
+    test('createSignedFile does NOT modify the original file', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
             $original    = file_get_contents($path);
             $originalHash = hash('sha256', $original);
 
-            $coc->createSignedFile($path, 'Alice');
+            $coc->createSignedFile($path, $aliceId);
 
             $after  = file_get_contents($path);
             $afterHash = hash('sha256', $after);
@@ -979,10 +1018,10 @@ if (! $dbAvailable) {
         }
     });
 
-    test('createSignedFile data passes checkSignature', function () use ($coc) {
+    test('createSignedFile data passes checkSignature', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $signedData = $coc->createSignedFile($path, 'Alice');
+            $signedData = $coc->createSignedFile($path, $aliceId);
 
             // Write signed data to a temp file and verify
             $tmp = __DIR__ . '/_verify_me.tif';
@@ -1003,7 +1042,7 @@ if (! $dbAvailable) {
         }
     });
 
-    test('createSignedFile still stores in the database', function () use ($testPdo, $coc) {
+    test('createSignedFile still stores in the database', function () use ($testPdo, $coc, $aliceId) {
         $path = copyTif();
         try {
             $data = file_get_contents($path);
@@ -1011,7 +1050,7 @@ if (! $dbAvailable) {
             file_put_contents($path, $data);
 
             $hash  = hash('sha256', $data); // what the hash SHOULD be
-            $coc->createSignedFile($path, 'Alice');
+            $coc->createSignedFile($path, $aliceId);
 
             $stmt   = $testPdo->prepare('SELECT id FROM chain_of_custody_signatures WHERE signature_hash = :hash');
             $stmt->execute([':hash' => $hash]);
@@ -1078,10 +1117,10 @@ if (! $dbAvailable) {
 
     echo "\n── checkSignature\n";
 
-    test('checkSignature returns authenticated=true for a properly signed file', function () use ($coc) {
+    test('checkSignature returns authenticated=true for a properly signed file', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
+            $coc->createSignature($path, $aliceId);
             $result = $coc->checkSignature($path);
             assertTrue($result['authenticated'], 'Should be authenticated');
             assertNotNull($result['hash'], 'Hash should be present');
@@ -1107,10 +1146,10 @@ if (! $dbAvailable) {
         }
     });
 
-    test('checkSignature returns authenticated=false for tampered file', function () use ($coc) {
+    test('checkSignature returns authenticated=false for tampered file', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
+            $coc->createSignature($path, $aliceId);
 
             $data = file_get_contents($path);
             $data[5000] = chr(ord($data[5000]) ^ 0xFF);
@@ -1131,10 +1170,10 @@ if (! $dbAvailable) {
 
     echo "\n── checkChainOfCustody\n";
 
-    test('checkChainOfCustody returns single-entry chain for first signature', function () use ($coc) {
+    test('checkChainOfCustody returns single-entry chain for first signature', function () use ($coc, $aliceId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
+            $coc->createSignature($path, $aliceId);
             $result = $coc->checkChainOfCustody($path);
             assertTrue($result['authenticated']);
             assertEquals(1, count($result['chain']));
@@ -1150,11 +1189,11 @@ if (! $dbAvailable) {
 
     echo "\n── createSignature (re-sign)\n";
 
-    test('re-signing creates a second DB record with proper chain linkage', function () use ($coc) {
+    test('re-signing creates a second DB record with proper chain linkage', function () use ($coc, $aliceId, $bobId) {
         $path = copyTif();
         try {
-            $firstHash  = $coc->createSignature($path, 'Alice');
-            $secondHash = $coc->createSignature($path, 'Bob');
+            $firstHash  = $coc->createSignature($path, $aliceId);
+            $secondHash = $coc->createSignature($path, $bobId);
 
             assertEquals($firstHash, $secondHash, 'Hash should be same for unchanged file');
 
@@ -1171,11 +1210,11 @@ if (! $dbAvailable) {
         }
     });
 
-    test('re-signed file still verifies', function () use ($coc) {
+    test('re-signed file still verifies', function () use ($coc, $aliceId, $bobId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
-            $coc->createSignature($path, 'Bob');
+            $coc->createSignature($path, $aliceId);
+            $coc->createSignature($path, $bobId);
             $result = $coc->checkSignature($path);
             assertTrue($result['authenticated']);
         } finally {
@@ -1185,11 +1224,11 @@ if (! $dbAvailable) {
         }
     });
 
-    test('checkChainOfCustody returns 2-entry chain after re-sign', function () use ($coc) {
+    test('checkChainOfCustody returns 2-entry chain after re-sign', function () use ($coc, $aliceId, $bobId) {
         $path = copyTif();
         try {
-            $coc->createSignature($path, 'Alice');
-            $coc->createSignature($path, 'Bob');
+            $coc->createSignature($path, $aliceId);
+            $coc->createSignature($path, $bobId);
             $result = $coc->checkChainOfCustody($path);
             assertTrue($result['authenticated']);
             assertEquals(2, count($result['chain']));
@@ -1199,6 +1238,110 @@ if (! $dbAvailable) {
         } finally {
             if (is_file($path)) {
                 unlink($path);
+            }
+        }
+    });
+
+    // ---- updateChainOfCustody -----------------------------------------------
+
+    echo "\n── updateChainOfCustody\n";
+
+    test('updateChainOfCustody signs modified file when userId matches', function () use ($coc, $aliceId) {
+        $origPath = copyTif();
+        $modPath  = copyModifiedTif();
+        try {
+            // First sign the original
+            $coc->createSignature($origPath, $aliceId);
+
+            // Now update with the modified file — should succeed
+            $result = $coc->updateChainOfCustody($origPath, $modPath, $aliceId);
+            assertIsString($result['data'], 'Should return signed binary data');
+            assertTrue(strlen($result['data']) > 100, 'Should contain binary data');
+            assertEquals($aliceId, $result['original']['user_id']);
+
+            // The signed modified data should pass verification
+            $tmp = __DIR__ . '/test_signed.tif';
+            file_put_contents($tmp, $result['data']);
+            try {
+                $check = $coc->checkSignature($tmp);
+                assertTrue($check['authenticated'], 'Signed modified file should verify');
+            } finally {
+                if (is_file($tmp)) {
+                    unlink($tmp);
+                }
+            }
+        } finally {
+            if (is_file($origPath)) {
+                unlink($origPath);
+            }
+            if (is_file($modPath)) {
+                unlink($modPath);
+            }
+        }
+    });
+
+    test('updateChainOfCustody throws when userId does not match', function () use ($coc, $aliceId, $bobId) {
+        $origPath = copyTif();
+        $modPath  = copyModifiedTif();
+        try {
+            // Sign the original as Alice
+            $coc->createSignature($origPath, $aliceId);
+
+            // Try to update as Bob — should throw
+            assertThrows(ChainOfCustodyException::class, function () use ($coc, $origPath, $modPath, $bobId) {
+                $coc->updateChainOfCustody($origPath, $modPath, $bobId);
+            });
+        } finally {
+            if (is_file($origPath)) {
+                unlink($origPath);
+            }
+            if (is_file($modPath)) {
+                unlink($modPath);
+            }
+        }
+    });
+
+    test('updateChainOfCustody links new signature to original in database', function () use ($coc, $aliceId) {
+        $origPath = copyTif();
+        $modPath  = copyModifiedTif();
+        try {
+            $coc->createSignature($origPath, $aliceId);
+            $result = $coc->updateChainOfCustody($origPath, $modPath, $aliceId);
+
+            // Write signed modified to a temp file and check the chain
+            $tmp = __DIR__ . '/test_signed.tif';
+            file_put_contents($tmp, $result['data']);
+            try {
+                $chain = $coc->checkChainOfCustody($tmp);
+                assertTrue($chain['authenticated']);
+                assertEquals(2, count($chain['chain']), 'Chain should have original + modified');
+                assertEquals($result['original']['id'], $chain['chain'][1]['id'], 'Original should be second in chain');
+            } finally {
+                if (is_file($tmp)) {
+                    unlink($tmp);
+                }
+            }
+        } finally {
+            if (is_file($origPath)) {
+                unlink($origPath);
+            }
+            if (is_file($modPath)) {
+                unlink($modPath);
+            }
+        }
+    });
+
+    test('updateChainOfCustody throws when original file is not signed', function () use ($aliceId) {
+        $coc = new ChainOfCustody(__DIR__ . '/config.php');
+        $modPath = copyModifiedTif();
+        try {
+            assertThrows(ChainOfCustodyException::class, function () use ($coc, $modPath, $aliceId) {
+                // origPath is a non-existent file — never signed
+                $coc->updateChainOfCustody('/tmp/nonexistent_orig.tif', $modPath, $aliceId);
+            });
+        } finally {
+            if (is_file($modPath)) {
+                unlink($modPath);
             }
         }
     });
@@ -1213,9 +1356,9 @@ if (! $dbAvailable) {
         });
     });
 
-    test('createSignedFile on non-existent file throws exception', function () use ($coc) {
-        assertThrows(ChainOfCustodyException::class, function () use ($coc) {
-            $coc->createSignedFile('/tmp/nonexistent_file_xyz.tif', 'Test');
+    test('createSignedFile on non-existent file throws exception', function () use ($coc, $aliceId) {
+        assertThrows(ChainOfCustodyException::class, function () use ($coc, $aliceId) {
+            $coc->createSignedFile('/tmp/nonexistent_file_xyz.tif', $aliceId);
         });
     });
 }
