@@ -9,6 +9,7 @@ declare(strict_types=1);
  *   - createSignature()      — sign a file on disk
  *   - createSignedFile()     — sign and return signed binary data
  *   - checkSignature()       — verify that the file matches its stored hash
+ *                            (both hash and DB record required for authentication)
  *   - checkChainOfCustody()  — verify and return the linked signature chain
  *   - updateChainOfCustody() — verify original, sign modified, link records
  *
@@ -121,9 +122,14 @@ class ChainOfCustody
      * Extracts the stored hash from the file, reconstructs the original
      * content (without the signature), computes its checksum, and compares.
      *
+     * Returns authenticated=true only when BOTH:
+     *   1. The embedded hash matches the file content (hash_valid),
+     *   2. A matching record exists in the database.
+     *
      * @param  string  $filePath  Path to the signed image file.
      * @return array{
      *     authenticated: bool,
+     *     hash_valid: bool|null,
      *     hash: string|null,
      *     signature: array|null,
      * }
@@ -138,19 +144,21 @@ class ChainOfCustody
         if ($existing === null) {
             return [
                 'authenticated' => false,
+                'hash_valid'    => null,
                 'hash'          => null,
                 'signature'     => null,
             ];
         }
 
-        $storedHash    = $existing['hash'];
-        $computedHash  = $handler->computeOriginalHash($data, $existing);
-        $authenticated = hash_equals($storedHash, $computedHash);
+        $storedHash   = $existing['hash'];
+        $computedHash = $handler->computeOriginalHash($data, $existing);
+        $hashValid    = hash_equals($storedHash, $computedHash);
 
-        $dbRecord = $authenticated ? $this->store->findByHash($storedHash) : null;
+        $dbRecord = $hashValid ? $this->store->findByHash($storedHash) : null;
 
         return [
-            'authenticated' => $authenticated,
+            'authenticated' => $hashValid && $dbRecord !== null,
+            'hash_valid'    => $hashValid,
             'hash'          => $storedHash,
             'signature'     => $dbRecord,
         ];

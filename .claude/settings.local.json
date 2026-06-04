@@ -5,7 +5,8 @@
       "Bash(php -m)",
       "Bash(php *)",
       "Bash(mysql *)",
-      "Bash(sudo mysql *)"
+      "Bash(sudo mysql *)",
+      "Read(//var/www/photo-verify.org/www/**)"
     ]
   }
 }

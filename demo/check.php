@@ -64,22 +64,21 @@ echo "done.\n\n";
 if ($result['authenticated']) {
     echo "  ✅ SIGNATURE VALID\n\n";
     echo "  Hash:      {$result['hash']}\n";
-
-    if ($result['signature'] !== null) {
-        echo "  Signed by: {$result['signature']['author_name']}\n";
-        echo "  Signed at: {$result['signature']['created_at']}\n";
-    } else {
-        echo "  (No database record found for this hash)\n";
-    }
-} else {
+    echo "  Signed by: {$result['signature']['author_name']}\n";
+    echo "  Signed at: {$result['signature']['created_at']}\n";
+} elseif ($result['hash_valid']) {
+    echo "  ❌ SIGNATURE NOT IN DATABASE\n\n";
+    echo "  Hash:      {$result['hash']}\n";
+    echo "  The file content is authentic but no matching signature record\n";
+    echo "  was found in the database.\n";
+} elseif ($result['hash'] !== null) {
     echo "  ❌ SIGNATURE INVALID\n\n";
-
-    if ($result['hash'] !== null) {
-        echo "  The file has a signature tag but the content does not match.\n";
-        echo "  It may have been tampered with.\n";
-    } else {
-        echo "  No Chain of Custody signature found in this file.\n";
-    }
+    echo "  Hash:      {$result['hash']}\n";
+    echo "  The file has a signature tag but the content does not match.\n";
+    echo "  It may have been tampered with.\n";
+} else {
+    echo "  ❌ NO SIGNATURE\n\n";
+    echo "  No Chain of Custody signature found in this file.\n";
 }
 
 // Chain of custody

@@ -712,15 +712,17 @@ function handleCheckAction(
         $html .= '<strong>✅ Signature Valid</strong><br>';
         $html .= 'The file ' . htmlspecialchars($originalName) . ' has not been tampered with.<br><br>';
         $html .= 'Hash: <code>' . htmlspecialchars($result['hash'] ?? '') . '</code><br>';
-
-        if ($result['signature'] !== null) {
-            $html .= 'Signed by: ' . htmlspecialchars($result['signature']['author_name'])
-                   . ' (' . htmlspecialchars($result['signature']['email'] ?? '') . ')<br>';
-            $html .= 'Signed at: ' . htmlspecialchars($result['signature']['created_at']);
-        } else {
-            $html .= '<em>No database record found for this hash.</em>';
-        }
-
+        $html .= 'Signed by: ' . htmlspecialchars($result['signature']['author_name'])
+               . ' (' . htmlspecialchars($result['signature']['email'] ?? '') . ')<br>';
+        $html .= 'Signed at: ' . htmlspecialchars($result['signature']['created_at']);
+        $html .= '</div>';
+    } elseif ($result['hash_valid']) {
+        $html .= '<div class="msg error">';
+        $html .= '<strong>❌ Signature Not in Database</strong><br>';
+        $html .= 'The file content is authentic but no matching signature record ';
+        $html .= 'was found in the database.<br>';
+        $html .= 'The file may have been signed outside this system or the database ';
+        $html .= 'records have been cleared.';
         $html .= '</div>';
     } elseif ($result['hash'] !== null) {
         $html .= '<div class="msg error">';

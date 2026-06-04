@@ -80,6 +80,11 @@ if ($result['authenticated']) {
     echo "File is authentic. Signed by: " . $result['signature']['author_name'];
 }
 
+// checkSignature returns:
+//   authenticated=true  — hash matches AND DB record exists
+//   hash_valid=true     — hash matches (even without DB record)
+//   hash=null           — no embedded signature found
+
 // Check the chain
 $chain = $coc->checkChainOfCustody('/path/to/image.tif');
 foreach ($chain['chain'] as $link) {

@@ -1137,6 +1137,7 @@ if (! $dbAvailable) {
         try {
             $result = $coc->checkSignature($path);
             assertFalse($result['authenticated'], 'Should NOT be authenticated');
+            assertNull($result['hash_valid']);
             assertNull($result['hash']);
             assertNull($result['signature']);
         } finally {
@@ -1157,8 +1158,34 @@ if (! $dbAvailable) {
 
             $result = $coc->checkSignature($path);
             assertFalse($result['authenticated'], 'Tampered file should NOT be authenticated');
+            assertFalse($result['hash_valid'], 'hash_valid should be false when content is tampered');
             assertNotNull($result['hash'], 'Hash should still be extractable');
             assertNull($result['signature'], 'DB record should be null when authentication fails');
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    test('checkSignature returns authenticated=false when DB record is missing', function () use ($testPdo, $coc, $aliceId) {
+        $path = copyTif();
+        try {
+            $coc->createSignature($path, $aliceId);
+
+            // Extract the stored hash from the signed file, then delete the DB record
+            $check = $coc->checkSignature($path);
+            $storedHash = $check['hash'];
+            assertNotNull($storedHash, 'Hash should be extractable from signed file');
+
+            $stmt = $testPdo->prepare('DELETE FROM chain_of_custody_signatures WHERE signature_hash = :hash');
+            $stmt->execute([':hash' => $storedHash]);
+
+            $result = $coc->checkSignature($path);
+            assertFalse($result['authenticated'], 'Should NOT be authenticated without DB record');
+            assertTrue($result['hash_valid'], 'hash_valid should be true — content is untampered');
+            assertNotNull($result['hash'], 'Hash should be present');
+            assertNull($result['signature'], 'DB record should be null');
         } finally {
             if (is_file($path)) {
                 unlink($path);
