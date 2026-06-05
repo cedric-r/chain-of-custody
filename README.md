@@ -193,16 +193,13 @@ src/
 config.example.php              # Template DB + SMTP configuration
 schema.sql                      # Database DDL (fresh install)
 migrate.sql                     # Migration script (existing installs)
-CLAUDE.md                       # Project documentation
 CHAIN_OF_CUSTODY_STANDARD.md    # Tag and protocol specification
-PROJECT.txt                     # Project description
 README.md                       # This file
 
 www/
 ├── index.php                   # Single-page web app with auth
 ├── config.php                  # DB + SMTP configuration
-├── photo-verify-logo-transparent.png
-└── CLAUDE.md                   # Website documentation
+└── photo-verify-logo-transparent.png
 
 demo/
 ├── sign.php, check.php, update.php   # CLI demo scripts
