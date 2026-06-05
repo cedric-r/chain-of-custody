@@ -1,0 +1,44 @@
+Projects change. Photographs move from person to person, from tool to tool. A
+crime-scene photo passes from the investigator's camera to a forensic analyst's
+workstation to a prosecutor's presentation software. A heritage digitisation
+travels from the conservator's studio through an editor's desktop to a public
+archive. At each step someone asks: is this still the original file, or has it
+been altered?
+
+The Chain of Custody library answers that question with cryptography, not trust.
+
+It embeds a SHA-256 checksum directly into the image file itself using the
+file's own metadata mechanisms — a private TIFF tag, a JPEG APP8 marker, a
+PNG ancillary chunk, or an ISOBMFF box for raw camera formats like CR3. The
+checksum is computed from the file content alone, so any modification breaks
+the signature. The same hash is stored in a MySQL database alongside the
+author's identity and a pointer to the previous signature, forming an auditable
+chain that can be followed backward through every version.
+
+The verification process reconstructs the original file in memory by stripping
+the signature metadata, computes the hash again, and compares. If they match
+and a database record exists the file is authentic. If the hash matches but no
+record is found the file is untampered but its provenance is unknown. If the
+hash doesn't match the file has been altered since it was signed.
+
+A separate lookup feature lets you upload any unsigned file and search the
+database by content hash to discover whether a signed version of that same file
+exists elsewhere in the chain.
+
+This is not watermarking, not DRM, not encryption. It is a forensic chain of
+custody built on standard image formats and ordinary mathematics. No external
+blockchains, no proprietary formats, no third-party services. The signature
+travels with the file and can be verified by anyone who runs the library.
+
+The project lives at https://photo-verify.org. The source code, the full
+protocol specification, and the documentation are all there.
+
+The stack is PHP 8.x, MySQL, and the built-in image parsers. It handles JPEG,
+PNG, TIFF, Canon CR2 and CR3, and Nikon NEF. Adding a new format means
+implementing seven abstract methods on a handler class. The entire library fits
+in a few thousand lines of code and has no dependencies beyond PDO.
+
+Chain of Custody was built for photographers, forensic analysts, cultural-
+heritage institutions, and anyone who needs to prove that a digital image has
+not been tampered with between the moment it was signed and the moment it was
+verified.

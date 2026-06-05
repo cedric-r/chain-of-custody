@@ -2,16 +2,36 @@
 
 ## Overview
 
-Chain of Custody is a lightweight standard for authenticating raster image
-files by embedding SHA-256 checksums as private TIFF tags and recording them
-in a database with author attribution. Successive signatures are linked to
-form an auditable chain of custody.
+Chain of Custody is a lightweight standard for authenticating raster image and
+raw camera files by embedding SHA-256 checksums using format-specific metadata
+mechanisms and recording them in a MySQL database with user attribution.
+Successive signatures are linked to form an auditable chain of custody.
 
 **Reference implementation:** PHP library in this repository.
+**Website:** https://photo-verify.org
 
 ---
 
-## Private TIFF Tag
+## Supported Formats
+
+| Format | Mechanism | Overhead | Status |
+|--------|-----------|----------|--------|
+| TIFF   | Private tag 65000 in appended IFD | 83 bytes | ✅ Supported |
+| CR2    | Same as TIFF (same magic number 42) | 83 bytes | ✅ Via TIFF handler |
+| NEF    | Same as TIFF (same magic number 42) | 83 bytes | ✅ Via TIFF handler |
+| JPEG   | APP8 marker with `CoC\0` identifier | 73 bytes | ✅ Supported |
+| PNG    | Private ancillary chunk `coCs` | 77 bytes | ✅ Supported |
+| CR3    | ISOBMFF box `CoC\0` appended at end | 73 bytes | ✅ Supported |
+| BigTIFF| — | — | ❌ Not supported (64-bit offsets) |
+
+---
+
+## TIFF / CR2 / NEF Format
+
+### Storage
+
+Tag 65000 falls within the **developer private range** (65000–65535) and
+should not conflict with any registered public tags.
 
 | Property    | Value        |
 |-------------|--------------|
@@ -20,13 +40,6 @@ form an auditable chain of custody.
 | Type        | 2 (ASCII)    |
 | Count       | 65 bytes     |
 | Data format | 64-character hex-encoded SHA-256 digest followed by a NUL byte |
-
-Tag 65000 falls within the **developer private range** (65000–65535) and
-should not conflict with any registered public tags.
-
----
-
-## Signature Storage
 
 The signature is stored by appending a new Image File Directory (IFD) at the
 end of the TIFF file's IFD chain. This is valid per the TIFF 6.0 specification,
@@ -65,65 +78,6 @@ The original file content is reconstructed in-memory by:
 
 SHA-256 is then computed on the reconstructed bytes and compared to the
 hash stored in the tag.
-
----
-
-## Database Schema
-
-The chain of custody is recorded in a self-referencing table:
-
-```sql
-CREATE TABLE chain_of_custody_signatures (
-    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    signature_hash  CHAR(64)     NOT NULL COMMENT 'SHA-256 hex',
-    author_name     VARCHAR(255) NOT NULL,
-    file_name       VARCHAR(1024) NOT NULL,
-    previous_id     BIGINT UNSIGNED NULL,
-    created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_signature_hash (signature_hash),
-    CONSTRAINT fk_previous_signature
-        FOREIGN KEY (previous_id) REFERENCES chain_of_custody_signatures(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
-
-- `signature_hash` — SHA-256 digest of the file content (excluding the CoC
-  IFD) at the time of signing.
-- `previous_id` — links to the previous signature in the chain; `NULL` for
-  the first signature.
-
-Unique on `signature_hash` is deliberately NOT enforced because re-signing an
-unchanged file produces the same hash but represents a separate signing event.
-
----
-
-## Signature Lifecycle
-
-### First signature
-
-```
-File (unsigned) → SHA-256 → H₁ → embed H₁ as tag 65000 → store H₁ + author in DB
-```
-
-### Re-signature
-
-```
-File (signed with H₁) → verify H₁ → SHA-256 → H₂ → update tag with H₂
-                                                          → store H₂ → H₁ in DB
-```
-
-If the file content has not changed since H₁, then H₂ = H₁ and the file tag
-need not be updated (the DB chain entry is still recorded).
-
----
-
-## Supported Formats
-
-| Format | Mechanism | Overhead | Status |
-|--------|-----------|----------|--------|
-| TIFF   | Private tag 65000 in appended IFD | 83 bytes | ✅ Supported |
-| JPEG   | APP8 marker with `CoC\0` identifier | 73 bytes | ✅ Supported |
-| PNG    | Private ancillary chunk `coCs` | 77 bytes | ✅ Supported |
-| BigTIFF| — | — | ❌ Not supported (64-bit offsets) |
 
 ---
 
@@ -196,24 +150,167 @@ computed on the remaining data and compared to the stored hash.
 
 ---
 
+## CR3 Format (Canon Raw v3)
+
+### Storage
+
+CR3 is based on ISO Base Media File Format (ISOBMFF / ISO 14496-12). The
+signature is stored in a private top-level box with type `CoC\0` appended
+at the end of the file.
+
+```
+┌─ Box structure ──────────────────────────────────────┐
+│  4 bytes: big-endian box size (73)                    │
+│  4 bytes: box type = "CoC\0"                         │
+│ 65 bytes: SHA-256 hex + NUL                          │
+└───────────────────────────────────────────────────────┘
+```
+
+### Detection
+
+The handler probes the file for an `ftyp` box with the major brand `crx `,
+which identifies CR3 files.
+
+### Verification
+
+The `CoC\0` box (73 bytes) is removed from the file. SHA-256 is computed on
+the remaining data and compared to the stored hash.
+
+---
+
+## Hash Computation
+
+The hash stored in both the file and the database is:
+
+```
+innerHash = SHA-256(fileContent)
+storedHash = SHA-256(innerHash || salt)
+```
+
+The salt is configured via the `hash_salt` key in the configuration file.
+When the salt is empty, `storedHash` equals `innerHash` (backward-compatible).
+The salt prevents pre-computed hash lookups against the database.
+
+---
+
+## Database Schema
+
+### Users table
+
+```sql
+CREATE TABLE users (
+    id                        BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    email                     VARCHAR(255) NOT NULL UNIQUE,
+    password_hash             VARCHAR(255) NOT NULL,
+    name                      VARCHAR(255) NOT NULL,
+    email_verified            TINYINT(1) NOT NULL DEFAULT 0,
+    verification_token        VARCHAR(64) DEFAULT NULL,
+    verification_token_expires DATETIME DEFAULT NULL,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Signatures table
+
+```sql
+CREATE TABLE chain_of_custody_signatures (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id         BIGINT UNSIGNED NOT NULL,
+    signature_hash  CHAR(64) NOT NULL,
+    author_name     VARCHAR(255) NOT NULL,
+    file_name       VARCHAR(1024) NOT NULL,
+    previous_id     BIGINT UNSIGNED NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_signature_hash (signature_hash),
+    INDEX idx_user_id (user_id),
+
+    CONSTRAINT fk_previous_signature
+        FOREIGN KEY (previous_id)
+        REFERENCES chain_of_custody_signatures(id)
+        ON DELETE SET NULL,
+    CONSTRAINT fk_user_signature
+        FOREIGN KEY (user_id) REFERENCES users(id)
+        ON DELETE RESTRICT
+);
+```
+
+- `signature_hash` — SHA-256 digest of the file content (excluding the CoC
+  metadata) at the time of signing, optionally salted.
+- `user_id` — references the user who created the signature.
+- `author_name` — denormalized copy of the user's display name at signing time.
+- `previous_id` — links to the previous signature in the chain; `NULL` for
+  the first signature.
+
+Unique on `signature_hash` is deliberately NOT enforced because re-signing an
+unchanged file produces the same hash but represents a separate signing event.
+
+---
+
+## Signature Lifecycle
+
+### First signature
+
+```
+File (unsigned) → innerHash = SHA-256(data)
+                → storedHash = SHA-256(innerHash || salt)
+                → embed storedHash in file metadata
+                → store storedHash + userId + fileName in DB
+```
+
+### Re-signature
+
+```
+File (signed) → verify existing signature
+              → innerHash = computeOriginalHash()
+              → storedHash = SHA-256(innerHash || salt)
+              → update file metadata with storedHash
+              → store new record linked to previous via previous_id
+```
+
+### Two-file update
+
+```
+Original (signed) → verify signature
+Modified (unsigned) → innerHash = SHA-256(data)
+                    → storedHash = SHA-256(innerHash || salt)
+                    → embed storedHash in modified file
+                    → store new record with previous_id → original's ID
+```
+
+### Lookup
+
+```
+Unsigned file → innerHash = SHA-256(data)
+              → storedHash = SHA-256(innerHash || salt)
+              → search DB for storedHash
+              → if found: return record + chain
+              → if not found: return "unknown"
+```
+
+---
+
+## checkSignature Return Values
+
+| Condition | authenticated | hash_valid | hash | signature |
+|-----------|--------------|------------|------|-----------|
+| Hash matches + DB record exists | true | true | hash | record |
+| Hash matches + no DB record | false | true | hash | null |
+| Hash doesn't match | false | false | hash | null |
+| No embedded signature | false | null | null | null |
+
+---
+
 ## Demo Scripts
 
-The repository ships with demo scripts in the `demo/` directory for all
-three supported formats:
+```
+demo/
+├── sign.php      # php demo/sign.php <file>               → <base>-signed.<ext>
+├── check.php     # php demo/check.php <file>              → verify + show chain
+├── update.php    # php demo/update.php <signed> <modified>  → <base>-updated.<ext>
+```
 
-| Script | Arguments | Reads | Writes | Action |
-|--------|-----------|-------|--------|--------|
-| `sign.php` | `<file>` | any image | `<base>-signed.<ext>` | First-time signature |
-| `check.php` | `<file>` | signed image | — | Verify + show chain |
-| `update.php` | `<file>` | signed image | `<base>-signed-signed.<ext>` | Re-sign + verify + show chain |
-
-The format is auto-detected from the file content — no extension-based
-switching is needed.
-
-Quick-start examples (hardcoded paths) are also provided as `sign-jpg.php`,
-`check-jpg.php`, `update-jpg.php`, and their `-png` counterparts.
-
-### Example workflow
+Example workflow:
 
 ```bash
 # 1. Sign an image
@@ -222,22 +319,43 @@ php demo/sign.php demo/image.jpg
 # 2. Verify the signed copy
 php demo/check.php demo/image-signed.jpg
 
-# 3. Re-sign with a new author (extends the chain)
-php demo/update.php demo/image-signed.jpg
+# 3. Edit the image, then update the chain
+php demo/update.php demo/image-signed.jpg demo/image-signed.jpg
 
-# 4. Inspect the full chain (now 3 entries)
-php demo/check.php demo/image-signed-signed.jpg
+# 4. Inspect the full chain (now 2 entries)
+php demo/check.php demo/image-signed-updated.jpg
 ```
+
+---
+
+## Web Interface
+
+The `www/` directory hosts a single-page PHP application with user
+authentication and the following tabs:
+
+| Tab | Auth | Description |
+|-----|------|-------------|
+| Home | Public | Project description + quick file verification |
+| Sign | Required | Upload and sign a file |
+| Check | Public | Verify a signed file + view chain of custody |
+| Lookup | Public | Upload an unsigned file to search the database by hash |
+| Update | Required | Two-file update to extend the chain |
+
+Email verification during registration uses an SMTP relay configured in the
+config file.
 
 ---
 
 ## Security Considerations
 
-- **Hash:** SHA-256 (collision-resistant for practical purposes).
+- **Hash:** SHA-256 with optional configurable salt.
+- **Salt:** When configured, `hash_salt` prevents pre-computed hash lookups.
 - **Tag placement:** Appended IFD — does not modify existing TIFF structure
   beyond updating one 4-byte offset pointer.
 - **Database trust:** The chain of custody is only as trustworthy as the
   database. Protect the database with access controls and backups.
 - **Verification:** Uses `hash_equals()` for timing-safe comparison.
-- **File integrity:** Any modification to the file between the TIFF header
-  and the CoC IFD (exclusive) will cause verification to fail.
+- **File integrity:** Any modification to the file between the header and the
+  CoC metadata (exclusive) will cause verification to fail.
+- **Authentication:** `authenticated=true` requires both a valid hash AND a
+  matching database record.
