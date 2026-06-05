@@ -5,13 +5,14 @@ declare(strict_types=1);
 /**
  * Chain of Custody — Main library API.
  *
- * Provides three high-level operations for image file authentication:
- *   - createSignature()      — sign a file on disk
- *   - createSignedFile()     — sign and return signed binary data
- *   - checkSignature()       — verify that the file matches its stored hash
- *                            (both hash and DB record required for authentication)
- *   - checkChainOfCustody()  — verify and return the linked signature chain
- *   - updateChainOfCustody() — verify original, sign modified, link records
+ * Provides high-level operations for image file authentication:
+ *   - createSignature()       — sign a file on disk
+ *   - createSignedFile()      — sign and return signed binary data
+ *   - checkSignature()        — verify that the file matches its stored hash
+ *                             (both hash and DB record required for authentication)
+ *   - checkChainOfCustody()   — verify and return the linked signature chain
+ *   - lookupSignature()       — look up an unsigned file by content hash
+ *   - updateChainOfCustody()  — verify original, sign modified, link records
  *
  * Automatically detects the image format (TIFF, JPEG, …) and delegates
  * to the appropriate format handler.
@@ -219,6 +220,48 @@ class ChainOfCustody
         return [
             'authenticated' => true,
             'chain'         => $chain,
+        ];
+    }
+
+    /**
+     * Look up an unsigned file by its content hash.
+     *
+     * Computes the salted SHA-256 of the file contents and searches the
+     * database for a matching signature record. Useful for finding whether
+     * a known unsigned version of a file exists in the chain.
+     *
+     * @param  string  $filePath  Path to the unsigned file.
+     * @return array{
+     *     found: bool,
+     *     hash: string|null,
+     *     record: array|null,
+     *     chain: array,
+     * }
+     */
+    public function lookupSignature(string $filePath): array
+    {
+        $data      = $this->readFile($filePath);
+        $innerHash = hash('sha256', $data);
+        $hash      = $this->applyHashSalt($innerHash);
+
+        $record = $this->store->findByHash($hash);
+
+        if ($record === null) {
+            return [
+                'found'  => false,
+                'hash'   => $hash,
+                'record' => null,
+                'chain'  => [],
+            ];
+        }
+
+        $chain = $this->store->getChain((int) $record['id']);
+
+        return [
+            'found'  => true,
+            'hash'   => $hash,
+            'record' => $record,
+            'chain'  => $chain,
         ];
     }
 

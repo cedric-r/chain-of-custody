@@ -1,2 +1,18 @@
+<Files "config.php">
+    Require all denied
+</Files>
+
+<Files "config.php.sav">
+    Require all denied
+</Files>
+
+<FilesMatch "\.(env|log|ini|sh)$">
+    Require all denied
+</FilesMatch>
+
+<FilesMatch "\.(md)$">
+    Require all denied
+</FilesMatch>
+
 php_value upload_max_filesize 50M
 php_value post_max_size 52M

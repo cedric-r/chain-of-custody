@@ -27,13 +27,13 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'update', 'download', 'login', 'register', 'logout', 'verify'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
 
 // Public actions (no auth needed)
-$publicActions = ['home', 'check', 'download', 'login', 'register', 'verify'];
+$publicActions = ['home', 'check', 'lookup', 'download', 'login', 'register', 'verify'];
 
 // Session
 $userId   = (int) ($_SESSION['user_id'] ?? 0);
@@ -69,6 +69,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         handleLoginPost();
         exit;
     }
+    if ($action === 'lookup') {
+        handleLookupAction();
+        exit;
+    }
     handlePost($action, $userId);
     exit;
 }
@@ -78,7 +82,7 @@ if ($action === 'download') {
     exit;
 }
 
-if (in_array($action, ['home', 'sign', 'check', 'update', 'login'], true)) {
+if (in_array($action, ['home', 'sign', 'check', 'lookup', 'update', 'login'], true)) {
     renderPage($action, null, $userName);
     exit;
 }
@@ -799,6 +803,102 @@ function handleCheckAction(
 }
 
 // ---------------------------------------------------------------------------
+// Lookup handler
+// ---------------------------------------------------------------------------
+
+function handleLookupAction(): void
+{
+    try {
+        $config = loadConfig();
+        $coc    = new ChainOfCustody(CONFIG_PATH);
+
+        // Validate upload
+        if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+            renderPage('lookup', errorMsg('Please select a file to look up.'), '');
+            return;
+        }
+
+        $file = $_FILES['file'];
+        $originalName = basename($file['name']);
+        $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+
+        if (!in_array($ext, ALLOWED_EXTENSIONS, true)) {
+            renderPage('lookup', errorMsg('Unsupported file format. Allowed: JPG, PNG, TIFF, CR2, CR3, NEF.'), '');
+            return;
+        }
+
+        if ($file['size'] > MAX_FILE_SIZE) {
+            renderPage('lookup', errorMsg('File too large. Maximum size is 100 MB.'), '');
+            return;
+        }
+
+        $tmpPath = tempnam(sys_get_temp_dir(), 'coc_lookup_');
+        if (!move_uploaded_file($file['tmp_name'], $tmpPath)) {
+            renderPage('lookup', errorMsg('Failed to process uploaded file.'), '');
+            return;
+        }
+
+        // If the file has an embedded signature, pass it to the check flow instead
+        $checkResult = $coc->checkSignature($tmpPath);
+        if ($checkResult['hash'] !== null) {
+            $userName = $_SESSION['user_name'] ?? '';
+            handleCheckAction($coc, $tmpPath, $originalName, 'lookup');
+            @unlink($tmpPath);
+            return;
+        }
+
+        $result = $coc->lookupSignature($tmpPath);
+        @unlink($tmpPath);
+        @unlink($tmpPath);
+
+        $html = '';
+
+        if ($result['found']) {
+            $record = $result['record'];
+            $html .= '<div class="msg success">';
+            $html .= '<strong>✅ Signature Found</strong><br>';
+            $html .= 'File: ' . htmlspecialchars($originalName) . '<br>';
+            $html .= 'Signed by: ' . htmlspecialchars($record['author_name'])
+                   . ' (' . htmlspecialchars($record['email'] ?? '') . ')<br>';
+            $html .= 'File name at signing: ' . htmlspecialchars($record['file_name']) . '<br>';
+            $html .= 'Signed at: ' . htmlspecialchars($record['created_at']) . '<br>';
+            $html .= 'Hash: <code>' . htmlspecialchars($result['hash']) . '</code>';
+            $html .= '</div>';
+
+            // Chain of custody
+            if (!empty($result['chain'])) {
+                $html .= '<h3>Chain of Custody</h3>';
+                $html .= '<table class="chain-table">';
+                $html .= '<thead><tr><th>#</th><th>Author</th><th>Date / Time</th><th>Signature Hash</th></tr></thead>';
+                $html .= '<tbody>';
+                foreach ($result['chain'] as $i => $link) {
+                    $label = $i === 0 ? 'Current' : (string) ($i + 1);
+                    $html .= '<tr>';
+                    $html .= '<td>' . htmlspecialchars($label) . '</td>';
+                    $html .= '<td>' . htmlspecialchars($link['author_name'])
+                           . ' (' . htmlspecialchars($link['email'] ?? '') . ')</td>';
+                    $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
+                    $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
+                    $html .= '</tr>';
+                }
+                $html .= '</tbody></table>';
+            }
+        } else {
+            $html .= '<div class="msg info">';
+            $html .= '<strong>No Matching Signature</strong><br>';
+            $html .= 'The file ' . htmlspecialchars($originalName) . ' is not known in the system.<br>';
+            $html .= 'Hash computed: <code>' . htmlspecialchars($result['hash']) . '</code>';
+            $html .= '</div>';
+        }
+
+        $userName = $_SESSION['user_name'] ?? '';
+        renderPage('lookup', $html, $userName);
+    } catch (Throwable $e) {
+        renderPage('lookup', errorMsg(htmlspecialchars($e->getMessage())), '');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Download handler
 // ---------------------------------------------------------------------------
 
@@ -1022,6 +1122,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
         <a href="?action=home"   class="tab <?= $activeTab === 'home'   ? 'active' : '' ?>">Home</a>
         <a href="?action=sign"   class="tab <?= $activeTab === 'sign'   ? 'active' : '' ?>">Sign</a>
         <a href="?action=check"  class="tab <?= $activeTab === 'check'  ? 'active' : '' ?>">Check</a>
+        <a href="?action=lookup" class="tab <?= $activeTab === 'lookup' ? 'active' : '' ?>">Lookup</a>
         <a href="?action=update" class="tab <?= $activeTab === 'update' ? 'active' : '' ?>">Update</a>
         <?php if ($userId === 0): ?>
         <a href="?action=login"  class="tab <?= $activeTab === 'login'  ? 'active' : '' ?>">Log in</a>
@@ -1061,6 +1162,23 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                            accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
                 </div>
                 <button type="submit" class="btn">Check Signature</button>
+            </form>
+        <?php elseif ($activeTab === 'lookup'): ?>
+            <div class="blurb">
+                <h2>Look Up a File</h2>
+                <p>
+                    Upload any image or raw file to search the database for a matching
+                    signature record. The system computes the file's hash and checks
+                    whether that hash exists in the chain of custody database.
+                </p>
+            </div>
+            <form method="post" action="?action=lookup" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="file_lookup">Select an unsigned image or raw file</label>
+                    <input type="file" name="file" id="file_lookup"
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
+                </div>
+                <button type="submit" class="btn">Look Up Hash</button>
             </form>
         <?php else: ?>
             <form method="post" action="?action=<?= htmlspecialchars($activeTab) ?>" enctype="multipart/form-data">

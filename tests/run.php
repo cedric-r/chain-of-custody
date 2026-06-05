@@ -1071,6 +1071,7 @@ if (! $dbAvailable) {
     skip('checkSignature (tampered)', 'No DB');
     skip('checkChainOfCustody', 'No DB');
     skip('updateChainOfCustody', 'No DB');
+    skip('lookupSignature', 'No DB');
     skip('handler detection', 'No DB');
 } else {
     // Clean test table
@@ -1571,6 +1572,53 @@ if (! $dbAvailable) {
                     unlink($path2);
                 }
             }
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    // ---- lookupSignature ----------------------------------------------------
+
+    echo "\n── lookupSignature\n";
+
+    test('lookupSignature finds a known signed file by its hash', function () use ($coc, $aliceId) {
+        $path = copyTif();
+        try {
+            // Sign the file first
+            $signedHash = $coc->createSignature($path, $aliceId);
+
+            // Lookup the unsigned original
+            $origPath = copyTif();
+            try {
+                $result = $coc->lookupSignature($origPath);
+                assertTrue($result['found'], 'Should find the signature record');
+                assertEquals($signedHash, $result['hash'], 'Hash should match');
+                assertNotNull($result['record'], 'Record should be present');
+                assertNotNull($result['chain'], 'Chain should not be null');
+                assertTrue(count($result['chain']) >= 1, 'Chain should have at least one entry');
+            } finally {
+                if (is_file($origPath)) {
+                    unlink($origPath);
+                }
+            }
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    test('lookupSignature returns not found for unknown file', function () use ($coc) {
+        $data = createTestJpeg();
+        $path = __DIR__ . '/test_unknown.jpg';
+        file_put_contents($path, $data);
+        try {
+            $result = $coc->lookupSignature($path);
+            assertFalse($result['found'], 'Unknown file should not be found');
+            assertNull($result['record'], 'No record expected');
+            assertTrue(empty($result['chain']), 'Empty chain expected');
         } finally {
             if (is_file($path)) {
                 unlink($path);
