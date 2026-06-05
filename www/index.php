@@ -36,20 +36,20 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
 
 // Public actions (no auth needed)
-$publicActions = ['home', 'check', 'lookup', 'feedback', 'download', 'login', 'register', 'verify'];
+$publicActions = ['home', 'check', 'lookup', 'feedback', 'gdpr', 'download', 'login', 'register', 'verify', 'forgot', 'reset'];
 
 // Session
 $userId   = (int) ($_SESSION['user_id'] ?? 0);
 $userName = $_SESSION['user_name'] ?? '';
 
 // Auth routes with their own UIs (not tabs)
-if (in_array($action, ['register', 'verify'], true)) {
+if (in_array($action, ['register', 'verify', 'forgot', 'reset'], true)) {
     handleAuthRoute($action);
     exit;
 }
@@ -95,7 +95,7 @@ if ($action === 'download') {
     exit;
 }
 
-if (in_array($action, ['home', 'sign', 'check', 'lookup', 'feedback', 'update', 'login'], true)) {
+if (in_array($action, ['home', 'sign', 'check', 'lookup', 'feedback', 'gdpr', 'update', 'login'], true)) {
     renderPage($action, null, $userName);
     exit;
 }
@@ -115,6 +115,20 @@ function handleAuthRoute(string $action): void
         } else {
             renderRegisterPage(null);
         }
+        return;
+    }
+
+    if ($action === 'forgot') {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            handleForgotPost();
+        } else {
+            renderForgotPage(null);
+        }
+        return;
+    }
+
+    if ($action === 'reset') {
+        handleResetAction();
         return;
     }
 
@@ -354,6 +368,266 @@ function renderLoginPage(?string $error, ?string $success = null): void
     renderAuthPage('login', $error, $success);
 }
 
+// ---------------------------------------------------------------------------
+// Password reset
+// ---------------------------------------------------------------------------
+
+function renderForgotPage(?string $error): void
+{
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Verify — Reset Password</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    line-height: 1.6;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+}
+.auth-container { width: 100%; max-width: 400px; padding: 0 20px; text-align: center; }
+.auth-logo { max-width: 90px; height: auto; margin-bottom: 8px; }
+.auth-container h1 { font-size: 22px; color: #1a1a2e; margin-bottom: 4px; }
+.auth-container .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+.auth-card {
+    background: #fff; border-radius: 8px; border: 1px solid #e4e6eb;
+    padding: 28px; text-align: left;
+}
+.form-group { margin-bottom: 18px; }
+.form-group label { display: block; margin-bottom: 5px; font-weight: 500; font-size: 14px; color: #444; }
+.form-group input[type="email"],
+.form-group input[type="password"] {
+    width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
+    border-radius: 6px; font-size: 14px; transition: border-color .15s;
+}
+.form-group input:focus {
+    outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+}
+.btn {
+    display: block; width: 100%; padding: 11px 0; background: #2563eb;
+    color: #fff; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 15px; font-weight: 600; text-align: center; text-decoration: none;
+    transition: background .15s;
+}
+.btn:hover { background: #1d4ed8; }
+.msg { padding: 12px 14px; border-radius: 6px; margin-bottom: 18px; font-size: 13px; }
+.msg.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+.msg.success { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+.auth-footer { margin-top: 18px; font-size: 13px; color: #666; text-align: center; }
+.auth-footer a { color: #2563eb; text-decoration: none; font-weight: 500; }
+.auth-footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="auth-container">
+    <img src="photo-verify-logo-transparent.png" alt="Photo Verify logo" class="auth-logo">
+    <h1>Photo Verify</h1>
+    <p class="subtitle">Chain of Custody Signature Tool</p>
+
+    <div class="auth-card">
+        <?php if ($error !== null): ?>
+            <div class="msg error"><?= htmlspecialchars($error) ?></div>
+        <?php endif; ?>
+
+        <form method="post" action="?action=forgot">
+            <div class="form-group">
+                <label for="email">Enter your email address</label>
+                <input type="email" name="email" id="email" required>
+            </div>
+            <button type="submit" class="btn">Send Reset Link</button>
+        </form>
+        <div class="auth-footer">
+            <a href="?action=login">Back to log in</a>
+        </div>
+    </div>
+</div>
+</body>
+</html>
+    <?php
+}
+
+function handleForgotPost(): void
+{
+    try {
+        $config = loadConfig();
+        $store  = new SignatureStore($config);
+
+        $email = trim($_POST['email'] ?? '');
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            renderForgotPage('Please enter a valid email address.');
+            return;
+        }
+
+        $user = $store->findUserByEmail($email);
+        if ($user === null) {
+            // Don't reveal whether the email exists
+            renderForgotPage('If that email is registered, a reset link has been sent.');
+            return;
+        }
+
+        $token   = bin2hex(random_bytes(32));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+
+        $store->setResetToken((int) $user['id'], $token, $expires);
+
+        // Send reset email
+        $smtpConfig = $config['smtp'] ?? [];
+        $resetUrl   = 'http://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/?action=reset&token=' . urlencode($token);
+
+        $subject = 'Reset your Photo Verify password';
+        $body    = "Hello {$user['name']},\n\n"
+                 . "A password reset was requested for your Photo Verify account.\n\n"
+                 . "Click the link below to set a new password:\n\n"
+                 . "{$resetUrl}\n\n"
+                 . "This link expires in 1 hour.\n\n"
+                 . "If you did not request this, please ignore this email.\n";
+
+        sendRawEmail($email, $subject, $body, $smtpConfig);
+
+        renderForgotPage('If that email is registered, a reset link has been sent.');
+    } catch (Throwable $e) {
+        renderForgotPage('An error occurred. Please try again.');
+    }
+}
+
+function handleResetAction(): void
+{
+    $token = $_GET['token'] ?? '';
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        handleResetPost($token);
+        return;
+    }
+
+    if ($token === '') {
+        renderLoginPage('Invalid reset link.');
+        return;
+    }
+
+    // Show the reset password form
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Verify — Set New Password</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    line-height: 1.6;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh;
+}
+.auth-container { width: 100%; max-width: 400px; padding: 0 20px; text-align: center; }
+.auth-logo { max-width: 90px; height: auto; margin-bottom: 8px; }
+.auth-container h1 { font-size: 22px; color: #1a1a2e; margin-bottom: 4px; }
+.auth-container .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+.auth-card {
+    background: #fff; border-radius: 8px; border: 1px solid #e4e6eb;
+    padding: 28px; text-align: left;
+}
+.form-group { margin-bottom: 18px; }
+.form-group label { display: block; margin-bottom: 5px; font-weight: 500; font-size: 14px; color: #444; }
+.form-group input[type="password"] {
+    width: 100%; padding: 10px 12px; border: 1px solid #d1d5db;
+    border-radius: 6px; font-size: 14px; transition: border-color .15s;
+}
+.form-group input:focus {
+    outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15);
+}
+.btn {
+    display: block; width: 100%; padding: 11px 0; background: #2563eb;
+    color: #fff; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 15px; font-weight: 600; text-align: center; text-decoration: none;
+    transition: background .15s;
+}
+.btn:hover { background: #1d4ed8; }
+.msg { padding: 12px 14px; border-radius: 6px; margin-bottom: 18px; font-size: 13px; }
+.msg.error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+</style>
+</head>
+<body>
+<div class="auth-container">
+    <img src="photo-verify-logo-transparent.png" alt="Photo Verify logo" class="auth-logo">
+    <h1>Photo Verify</h1>
+    <p class="subtitle">Set a new password</p>
+
+    <div class="auth-card">
+        <form method="post" action="?action=reset&token=<?= htmlspecialchars(urlencode($token)) ?>">
+            <div class="form-group">
+                <label for="password">New password (min. 8 characters)</label>
+                <input type="password" name="password" id="password" minlength="8" required>
+            </div>
+            <div class="form-group">
+                <label for="password_confirm">Confirm new password</label>
+                <input type="password" name="password_confirm" id="password_confirm" required>
+            </div>
+            <button type="submit" class="btn">Set New Password</button>
+        </form>
+    </div>
+</div>
+</body>
+</html>
+    <?php
+}
+
+function handleResetPost(string $token): void
+{
+    try {
+        $config = loadConfig();
+        $store  = new SignatureStore($config);
+
+        $password       = $_POST['password'] ?? '';
+        $passwordConfirm = $_POST['password_confirm'] ?? '';
+
+        if ($token === '') {
+            renderLoginPage('Invalid reset link.');
+            return;
+        }
+
+        if (strlen($password) < 8) {
+            renderLoginPage('Password must be at least 8 characters.');
+            return;
+        }
+
+        if ($password !== $passwordConfirm) {
+            renderLoginPage('Passwords do not match.');
+            return;
+        }
+
+        $user = $store->findUserByVerificationToken($token);
+
+        if ($user === null) {
+            renderLoginPage('Invalid or expired reset link.');
+            return;
+        }
+
+        $expires = $user['verification_token_expires'] ?? null;
+        if ($expires !== null && strtotime($expires) < time()) {
+            renderLoginPage('Reset link has expired. Please request a new one.');
+            return;
+        }
+
+        $store->updatePassword((int) $user['id'], password_hash($password, PASSWORD_DEFAULT));
+
+        renderLoginPage(null, 'Password reset successfully. You can now log in.');
+    } catch (Throwable $e) {
+        renderLoginPage('An error occurred. Please try again.');
+    }
+}
+
 /**
  * Render the login form inside the tabbed interface card.
  * Used by the "Log in" tab when the user is not authenticated.
@@ -430,7 +704,10 @@ function renderLoginFormContent(?string $error): void
         </div>
         <button type="submit" class="btn">Log In</button>
     </form>
-    <p style="margin-top:16px;font-size:13px;color:#666;">
+    <p style="margin-top:12px;font-size:13px;color:#666;">
+        <a href="?action=forgot" style="color:#2563eb;font-weight:500;">Forgot your password?</a>
+    </p>
+    <p style="margin-top:8px;font-size:13px;color:#666;">
         Don't have an account? <a href="?action=register" style="color:#2563eb;font-weight:500;">Register</a>
     </p>
     <?php
@@ -1229,6 +1506,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
 
 /* Blurb */
 .blurb h2 { font-size: 18px; margin-bottom: 12px; color: #1a1a2e; }
+.blurb h3 { font-size: 15px; margin: 20px 0 8px; color: #1a1a2e; }
 .blurb p { font-size: 14px; color: #555; margin-bottom: 10px; line-height: 1.7; }
 .blurb ul { margin: 10px 0 0 20px; font-size: 14px; color: #555; line-height: 1.8; }
 .blurb ul li strong { color: #333; }
@@ -1272,6 +1550,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
         <?php if ($userId === 0): ?>
         <a href="?action=login"  class="tab <?= $activeTab === 'login'  ? 'active' : '' ?>">Log in</a>
         <?php endif; ?>
+        <a href="?action=gdpr"   class="tab <?= $activeTab === 'gdpr'   ? 'active' : '' ?>">GDPR</a>
     </div>
 
     <div class="card">
@@ -1328,6 +1607,110 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
             </form>
         <?php elseif ($activeTab === 'feedback'): ?>
             <?php renderFeedbackFormContent(null); ?>
+        <?php elseif ($activeTab === 'gdpr'): ?>
+            <div class="blurb">
+                <h2>GDPR Compliance</h2>
+
+                <h3>Data Controller</h3>
+                <p>
+                    The operator of this website is the data controller for any
+                    personal data collected through the service. If you have
+                    questions about your data, please use the Feedback tab to
+                    contact the site administrator.
+                </p>
+
+                <h3>What Data We Collect</h3>
+                <p>
+                    When you register for an account, we collect your
+                    <strong>email address</strong> and the
+                    <strong>name</strong> you provide. The email address is
+                    used as your login identifier and as a contact address for
+                    account-related communication (verification email,
+                    password reset). The name is displayed alongside signatures
+                    you create in the chain of custody records.
+                </p>
+                <p>
+                    When you submit the feedback form, we collect the
+                    <strong>name</strong>, <strong>email address</strong>, and
+                    <strong>message</strong> you enter. These are forwarded to
+                    the site administrator via email and are not stored in the
+                    website database.
+                </p>
+                <p>
+                    No other personal data is processed. We do not use
+                    analytics services, tracking cookies, advertising, or
+                    third-party data processors. The website does not log IP
+                    addresses or browser fingerprints beyond what your HTTP
+                    client automatically sends in request headers.
+                </p>
+
+                <h3>Legal Basis</h3>
+                <p>
+                    The processing of your email address and name for account
+                    management is necessary for the performance of the contract
+                    (providing the chain of custody signing service). The
+                    processing of feedback form data is based on your consent,
+                    given when you submit the form.
+                </p>
+
+                <h3>Data Retention</h3>
+                <p>
+                    Your account data (email, name) is retained for as long as
+                    your account exists. Signature records are kept
+                    indefinitely as they form part of an auditable chain of
+                    custody. You can request deletion of your account and
+                    personal data via the Feedback tab.
+                </p>
+
+                <h3>Your Rights</h3>
+                <p>Under the General Data Protection Regulation you have the following rights:</p>
+                <ul>
+                    <li><strong>Right of access</strong> — request a copy of the personal data we hold about you.</li>
+                    <li><strong>Right to rectification</strong> — request correction of inaccurate data.</li>
+                    <li><strong>Right to erasure</strong> — request deletion of your account and personal data.</li>
+                    <li><strong>Right to restrict processing</strong> — request limitation of data processing.</li>
+                    <li><strong>Right to data portability</strong> — request a machine-readable export of your data.</li>
+                    <li><strong>Right to object</strong> — object to the processing of your personal data.</li>
+                </ul>
+                <p>
+                    To exercise any of these rights, use the Feedback tab or
+                    contact the site administrator directly.
+                </p>
+
+                <h3>Data Security</h3>
+                <p>
+                    Passwords are stored as bcrypt hashes. Communications
+                    between your browser and this website are encrypted via
+                    HTTPS. The database is accessible only to the web
+                    application and authorised administrators.
+                </p>
+
+                <h3>Third-Party Data Sharing</h3>
+                <p>
+                    We do not sell, rent, or share your personal data with
+                    third parties. Emails sent through the feedback form are
+                    delivered via the configured SMTP relay and are not stored
+                    on the website.
+                </p>
+
+                <h3>Cookies</h3>
+                <p>
+                    This website uses a session cookie (PHPSESSID) that is
+                    strictly necessary for authentication. No tracking,
+                    analytics, or advertising cookies are used.
+                </p>
+
+                <h3>Changes to This Policy</h3>
+                <p>
+                    Any changes to this GDPR compliance statement will be
+                    posted on this page. Continued use of the service after
+                    changes constitutes acceptance of the updated policy.
+                </p>
+
+                <p style="margin-top:20px;font-size:13px;color:#888;">
+                    Last updated: June 2026
+                </p>
+            </div>
         <?php else: ?>
             <form method="post" action="?action=<?= htmlspecialchars($activeTab) ?>" enctype="multipart/form-data">
 

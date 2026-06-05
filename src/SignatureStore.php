@@ -250,4 +250,43 @@ class SignatureStore
 
         return $row !== false ? $row : null;
     }
+
+    /**
+     * Store a password-reset token for a user.
+     *
+     * Reuses the verification_token and verification_token_expires columns.
+     */
+    public function setResetToken(int $userId, string $token, string $expires): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE users
+             SET verification_token = :token, verification_token_expires = :expires
+             WHERE id = :id'
+        );
+
+        $stmt->execute([
+            ':token'   => $token,
+            ':expires' => $expires,
+            ':id'      => $userId,
+        ]);
+    }
+
+    /**
+     * Update a user's password hash.
+     */
+    public function updatePassword(int $userId, string $passwordHash): void
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE users
+             SET password_hash = :password_hash,
+                 verification_token = NULL,
+                 verification_token_expires = NULL
+             WHERE id = :id'
+        );
+
+        $stmt->execute([
+            ':password_hash' => $passwordHash,
+            ':id'            => $userId,
+        ]);
+    }
 }
