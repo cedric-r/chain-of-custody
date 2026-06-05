@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 
-define('ALLOWED_EXTENSIONS', ['jpg', 'jpeg', 'png', 'tif', 'tiff']);
+define('ALLOWED_EXTENSIONS', ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'cr2', 'cr3', 'nef']);
 define('MAX_FILE_SIZE', 100 * 1024 * 1024);
 define('TEMP_FILE_TTL', 3600);
 define('CONFIG_PATH', __DIR__ . '/config.php');
@@ -494,7 +494,7 @@ function handlePost(string $action, int $userId): void
         $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
         if (!in_array($ext, ALLOWED_EXTENSIONS, true)) {
-            renderPage($action, errorMsg('Unsupported file format. Allowed: JPG, PNG, TIFF.'), $_SESSION['user_name'] ?? '');
+            renderPage($action, errorMsg('Unsupported file format. Allowed: JPG, PNG, TIFF, CR2, CR3, NEF.'), $_SESSION['user_name'] ?? '');
             return;
         }
 
@@ -598,7 +598,7 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
     $originalExt  = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
 
     if (!in_array($originalExt, ALLOWED_EXTENSIONS, true)) {
-        renderPage($action, errorMsg('Original file format not supported. Allowed: JPG, PNG, TIFF.'), $userName);
+        renderPage($action, errorMsg('Original file format not supported. Allowed: JPG, PNG, TIFF, CR2, CR3, NEF.'), $userName);
         return;
     }
 
@@ -626,7 +626,7 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
 
     if (!in_array($modifiedExt, ALLOWED_EXTENSIONS, true)) {
         @unlink($originalTmp);
-        renderPage($action, errorMsg('Modified file format not supported. Allowed: JPG, PNG, TIFF.'), $userName);
+        renderPage($action, errorMsg('Modified file format not supported. Allowed: JPG, PNG, TIFF, CR2, CR3, NEF.'), $userName);
         return;
     }
 
@@ -803,6 +803,9 @@ function handleDownload(): void
         'png'  => 'image/png',
         'tif'  => 'image/tiff',
         'tiff' => 'image/tiff',
+        'cr2'  => 'image/x-canon-cr2',
+        'cr3'  => 'image/x-canon-cr3',
+        'nef'  => 'image/x-nikon-nef',
     ];
     $ext  = $meta['ext'] ?? '';
     $mime = $mimeTypes[$ext] ?? 'application/octet-stream';
@@ -992,18 +995,18 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                 <div class="form-group">
                     <label for="original_file">Original signed file (authentic, unmodified)</label>
                     <input type="file" name="original_file" id="original_file"
-                           accept=".jpg,.jpeg,.png,.tif,.tiff" required>
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
                 </div>
                 <div class="form-group">
                     <label for="modified_file">Modified file to sign</label>
                     <input type="file" name="modified_file" id="modified_file"
-                           accept=".jpg,.jpeg,.png,.tif,.tiff" required>
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
                 </div>
                 <?php else: ?>
                 <div class="form-group">
-                    <label for="file">Select image file (JPG, PNG, or TIFF)</label>
+                    <label for="file">Select image file (JPG, PNG, TIFF, CR2, CR3, NEF)</label>
                     <input type="file" name="file" id="file"
-                           accept=".jpg,.jpeg,.png,.tif,.tiff" required>
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
                 </div>
                 <?php endif; ?>
 

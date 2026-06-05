@@ -12,6 +12,7 @@ declare(strict_types=1);
  *   2. TiffSignatureHandler   — TIFF unit tests (no DB)
  *   3. JpegSignatureHandler   — JPEG unit tests (no DB)
  *   3b. PngSignatureHandler    — PNG unit tests (no DB)
+ *   3c. Cr3SignatureHandler    — CR3 unit tests (no DB)
  *   4. ChainOfCustody         — integration tests (require MySQL)
  */
 
@@ -226,6 +227,26 @@ function createTestPng(): string
     $png .= pack('N', 0) . 'IEND' . $iendCrc;
 
     return $png;
+}
+
+/**
+ * Build a minimal CR3 file (ISOBMFF with 'crx ' brand) for testing.
+ *
+ * Structure: ftyp box (major brand "crx ", compatible "isom") + mdat box.
+ */
+function createTestCr3(): string
+{
+    // ftyp box
+    $ftypBrands = "crx \x00\x00\x00\x01isom";
+    $ftypSize   = strlen($ftypBrands) + 8; // 8-byte header
+    $cr3        = pack('N', $ftypSize) . 'ftyp' . $ftypBrands;
+
+    // mdat box with minimal dummy data
+    $mdatData = "\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x02\x03\x04";
+    $mdatSize = strlen($mdatData) + 8;
+    $cr3     .= pack('N', $mdatSize) . 'mdat' . $mdatData;
+
+    return $cr3;
 }
 
 function cleanup(): void
@@ -875,6 +896,150 @@ test('PNG re-signing produces matching hash', function () use ($png) {
 });
 
 // ===========================================================================
+// 3c. Cr3SignatureHandler — unit tests
+// ===========================================================================
+
+echo "\n══════════════════════════════════════════════════════════════════\n";
+echo "  Cr3SignatureHandler — Unit Tests\n";
+echo "══════════════════════════════════════════════════════════════════\n\n";
+
+$cr3 = new Cr3SignatureHandler();
+
+echo "── detect()\n";
+
+test('detects CR3 by ftyp + major brand', function () use ($cr3) {
+    assertTrue($cr3->detect(createTestCr3()));
+});
+
+test('rejects TIFF data', function () use ($cr3) {
+    assertFalse($cr3->detect(readTiff()));
+});
+
+test('rejects JPEG data', function () use ($cr3) {
+    assertFalse($cr3->detect(createTestJpeg()));
+});
+
+test('rejects PNG data', function () use ($cr3) {
+    assertFalse($cr3->detect(createTestPng()));
+});
+
+test('rejects empty data', function () use ($cr3) {
+    assertFalse($cr3->detect(''));
+});
+
+echo "\n── getFormatName()\n";
+
+test('returns "CR3"', function () use ($cr3) {
+    assertEquals('CR3', $cr3->getFormatName());
+});
+
+// --- find() on unsigned file -------------------------------------------------
+
+echo "\n── find() — unsigned file\n";
+
+test('returns null for CR3 without CoC box', function () use ($cr3) {
+    assertNull($cr3->find(createTestCr3()));
+});
+
+// --- Signing round-trip (in-memory) ------------------------------------------
+
+echo "\n── Signing round-trip (in-memory)\n";
+
+test('signs an unsigned CR3 by appending CoC box', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash = hash('sha256', $data);
+
+    $info   = $cr3->getUnsignedInfo($data);
+    $signed = $cr3->signUnsigned($data, $hash, $info);
+
+    assertTrue(strlen($signed) > strlen($data), 'Signed file should be larger');
+    assertEquals(strlen($data) + Cr3SignatureHandler::OVERHEAD_BYTES, strlen($signed),
+        'Signed file should be exactly original + overhead');
+});
+
+test('find() locates the signature after signing CR3', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash = hash('sha256', $data);
+
+    $info   = $cr3->getUnsignedInfo($data);
+    $signed = $cr3->signUnsigned($data, $hash, $info);
+
+    $found = $cr3->find($signed);
+    assertNotNull($found, 'Should find the CoC box');
+    assertEquals($hash, $found['hash'], 'Stored hash should match');
+});
+
+test('computeOriginalHash matches original CR3 hash', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash = hash('sha256', $data);
+
+    $info   = $cr3->getUnsignedInfo($data);
+    $signed = $cr3->signUnsigned($data, $hash, $info);
+
+    $found     = $cr3->find($signed);
+    $computed  = $cr3->computeOriginalHash($signed, $found);
+    assertEquals($hash, $computed, 'Should reconstruct the original hash');
+});
+
+test('verification succeeds after signing CR3', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash = hash('sha256', $data);
+
+    $info   = $cr3->getUnsignedInfo($data);
+    $signed = $cr3->signUnsigned($data, $hash, $info);
+
+    $found = $cr3->find($signed);
+    assertTrue(hash_equals($found['hash'], $cr3->computeOriginalHash($signed, $found)));
+});
+
+// --- Tamper detection --------------------------------------------------------
+
+echo "\n── Tamper detection (CR3)\n";
+
+test('CR3 verification fails after tampering', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash = hash('sha256', $data);
+
+    $info    = $cr3->getUnsignedInfo($data);
+    $signed  = $cr3->signUnsigned($data, $hash, $info);
+
+    // Tamper with the mdat data (not the CoC box)
+    $tampered   = $signed;
+    $mdatOffset = 8 + strlen("crx \x00\x00\x00\x01isom") + 8; // after ftyp box
+    $tampered[$mdatOffset + 4] = chr(ord($tampered[$mdatOffset + 4]) ^ 0xFF);
+
+    $found = $cr3->find($tampered);
+    assertNotNull($found);
+    assertFalse(hash_equals($found['hash'], $cr3->computeOriginalHash($tampered, $found)));
+});
+
+// --- Re-signing --------------------------------------------------------------
+
+echo "\n── Re-signing (CR3)\n";
+
+test('CR3 re-signing produces matching hash', function () use ($cr3) {
+    $data = createTestCr3();
+    $hash1 = hash('sha256', $data);
+
+    $info   = $cr3->getUnsignedInfo($data);
+    $signed = $cr3->signUnsigned($data, $hash1, $info);
+
+    $info1 = $cr3->find($signed);
+    $computed1 = $cr3->computeOriginalHash($signed, $info1);
+    assertTrue(hash_equals($info1['hash'], $computed1));
+
+    // Re-sign
+    $hash2    = $cr3->computeOriginalHash($signed, $info1);
+    $resigned = $cr3->updateSignature($signed, $hash2, $info1);
+
+    $info2 = $cr3->find($resigned);
+    assertNotNull($info2);
+
+    $computed2 = $cr3->computeOriginalHash($resigned, $info2);
+    assertTrue(hash_equals($info2['hash'], $computed2));
+});
+
+// ===========================================================================
 // 4. ChainOfCustody — integration tests (require database)
 // ===========================================================================
 
@@ -1099,6 +1264,18 @@ if (! $dbAvailable) {
         $handler = $method->invoke($coc, $pngData);
 
         assertTrue($handler instanceof PngSignatureHandler, 'PNG data should return PngSignatureHandler');
+    });
+
+    test('ChainOfCustody uses Cr3SignatureHandler for CR3 data', function () {
+        $reflection = new ReflectionClass(ChainOfCustody::class);
+        $method     = $reflection->getMethod('detectHandler');
+        $method->setAccessible(true);
+
+        $coc    = new ChainOfCustody(__DIR__ . '/config.php');
+        $cr3Data = createTestCr3();
+        $handler = $method->invoke($coc, $cr3Data);
+
+        assertTrue($handler instanceof Cr3SignatureHandler, 'CR3 data should return Cr3SignatureHandler');
     });
 
     test('detectHandler throws for unknown format', function () {

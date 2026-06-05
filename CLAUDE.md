@@ -1,9 +1,9 @@
 # Chain of Custody — PHP Library
 
-PHP library that authenticates image files (TIFF, JPEG, PNG) by embedding
-SHA-256 checksums using format-specific metadata mechanisms and recording them
-with author attribution in a MySQL database. Successive signatures form an
-auditable chain of custody.
+PHP library that authenticates image and raw camera files (TIFF, JPEG, PNG, CR3,
+plus CR2 and NEF via the TIFF handler) by embedding SHA-256 checksums using
+format-specific metadata mechanisms and recording them with user attribution in
+a MySQL database. Successive signatures form an auditable chain of custody.
 
 Refer to `CHAIN_OF_CUSTODY_STANDARD.md` for the full tag and protocol spec.
 
@@ -13,9 +13,10 @@ Refer to `CHAIN_OF_CUSTODY_STANDARD.md` for the full tag and protocol spec.
 src/
 ├── ChainOfCustody.php          # Main API — format-agnostic dispatch
 ├── ImageSignatureHandler.php   # Abstract base class + exceptions
-├── TiffSignatureHandler.php    # TIFF handler (tag 65000, appended IFD)
+├── TiffSignatureHandler.php    # TIFF handler (tag 65000, appended IFD) — also handles CR2, NEF
 ├── JpegSignatureHandler.php    # JPEG handler (APP8 marker)
 ├── PngSignatureHandler.php     # PNG handler (coCs chunk)
+├── Cr3SignatureHandler.php     # CR3 (Canon Raw v3) handler (ISOBMFF box)
 ├── SignatureStore.php          # PDO/MySQL store for signature records
 config.example.php              # Template DB configuration (copy to config.php)
 schema.sql                      # Database DDL
@@ -27,9 +28,10 @@ CHAIN_OF_CUSTODY_STANDARD.md    # Tag and protocol specification
 
 ```
 ImageSignatureHandler (abstract)
-  ├── TiffSignatureHandler   TIFF tag 65000, appended IFD
+  ├── TiffSignatureHandler   TIFF tag 65000, appended IFD (also CR2, NEF)
   ├── JpegSignatureHandler   JPEG APP8 marker "CoC\0"
-  └── PngSignatureHandler    PNG private chunk "coCs"
+  ├── PngSignatureHandler    PNG private chunk "coCs"
+  └── Cr3SignatureHandler    CR3 ISOBMFF box "CoC\0"
 ```
 
 `ChainOfCustody` auto-detects the format and delegates to the matching
@@ -40,9 +42,10 @@ and registering the handler in the constructor.
 
 | Format | Mechanism | Overhead |
 |--------|-----------|----------|
-| TIFF   | Private tag 65000 in appended IFD | 83 bytes |
+| TIFF / CR2 / NEF | Private tag 65000 in appended IFD | 83 bytes |
 | JPEG   | APP8 marker `FF E8 "CoC\0"` | 73 bytes |
 | PNG    | Private ancillary chunk `coCs` | 77 bytes |
+| CR3    | ISOBMFF box `CoC\0` appended at end | 73 bytes |
 
 ## Key Design Decisions
 

@@ -30,6 +30,7 @@ require_once __DIR__ . '/SignatureStore.php';
 require_once __DIR__ . '/TiffSignatureHandler.php';
 require_once __DIR__ . '/JpegSignatureHandler.php';
 require_once __DIR__ . '/PngSignatureHandler.php';
+require_once __DIR__ . '/Cr3SignatureHandler.php';
 
 class ChainOfCustody
 {
@@ -50,6 +51,7 @@ class ChainOfCustody
         $this->handlers = [
             new PngSignatureHandler(), // most specific signature check first
             new JpegSignatureHandler(),
+            new Cr3SignatureHandler(),
             new TiffSignatureHandler(),
         ];
 
