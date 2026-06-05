@@ -6,7 +6,9 @@
       "Bash(php *)",
       "Bash(mysql *)",
       "Bash(sudo mysql *)",
-      "Read(//var/www/photo-verify.org/www/**)"
+      "Read(//var/www/photo-verify.org/www/**)",
+      "Bash(git -C /mnt/katsumi/data/chain-of-custody status www/config.php)",
+      "Bash(git -C /mnt/katsumi/data/chain-of-custody ls-files www/config.php)"
     ]
   }
 }

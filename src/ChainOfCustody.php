@@ -39,6 +39,9 @@ class ChainOfCustody
 
     private SignatureStore $store;
 
+    /** Secret salt appended to the hash input. */
+    private string $hashSalt = '';
+
     /**
      * @param  string  $configPath  Path to a PHP file returning a DB-config array.
      * @throws ChainOfCustodyException  When the config file cannot be loaded.
@@ -70,7 +73,29 @@ class ChainOfCustody
             );
         }
 
-        $this->store = new SignatureStore($config);
+        $this->hashSalt = (string) ($config['hash_salt'] ?? '');
+        $this->store    = new SignatureStore($config);
+    }
+
+    // ------------------------------------------------------------------
+    //  Salt helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Compute a salted hash from an inner (file-content) hash.
+     *
+     * hash = SHA-256(innerHash || salt)
+     *
+     * The salt prevents pre-computed hash lookups. When the salt is empty
+     * the returned hash is identical to the inner hash (backward-compatible).
+     */
+    private function applyHashSalt(string $innerHash): string
+    {
+        if ($this->hashSalt === '') {
+            return $innerHash;
+        }
+
+        return hash('sha256', $innerHash . $this->hashSalt);
     }
 
     // ------------------------------------------------------------------
@@ -152,9 +177,10 @@ class ChainOfCustody
             ];
         }
 
-        $storedHash   = $existing['hash'];
-        $computedHash = $handler->computeOriginalHash($data, $existing);
-        $hashValid    = hash_equals($storedHash, $computedHash);
+        $storedHash      = $existing['hash'];
+        $computedInner   = $handler->computeOriginalHash($data, $existing);
+        $computedSalted  = $this->applyHashSalt($computedInner);
+        $hashValid       = hash_equals($storedHash, $computedSalted);
 
         $dbRecord = $hashValid ? $this->store->findByHash($storedHash) : null;
 
@@ -199,11 +225,9 @@ class ChainOfCustody
     /**
      * Update the chain of custody by signing a modified file.
      *
-     * Verifies that the original signed file is authentic and that the
-     * given user is the same user who created the original signature,
-     * then signs the modified file and links the new signature to the
-     * original record in the database so the chain reads:
-     * … → original → modified.
+     * Verifies that the original signed file is authentic, then signs the
+     * modified file and links the new signature to the original record in
+     * the database so the chain reads: … → original → modified.
      *
      * The modified file is signed as a first-time signature (any existing
      * signature on the modified file is ignored — pass the unsigned
@@ -211,7 +235,7 @@ class ChainOfCustody
      *
      * @param  string  $originalSignedPath  Path to the authentic, signed original file.
      * @param  string  $modifiedPath        Path to the (unsigned) modified file.
-     * @param  int     $userId              ID of the user — must match the original signature's user.
+     * @param  int     $userId              ID of the user creating the new signature.
      * @return array{
      *     data: string,
      *     hash: string,
@@ -219,8 +243,7 @@ class ChainOfCustody
      * }
      *
      * @throws ChainOfCustodyException  When the original file is not authentic,
-     *                                  has no database record, the user does not
-     *                                  match the original signer, or on I/O failure.
+     *                                  has no database record, or on I/O failure.
      */
     public function updateChainOfCustody(
         string $originalSignedPath,
@@ -243,18 +266,12 @@ class ChainOfCustody
             );
         }
 
-        // 2. Verify the user matches the original signature's owner
-        if ((int) $originalRecord['user_id'] !== $userId) {
-            throw new ChainOfCustodyException(
-                'Cannot update: the original signature belongs to a different user.'
-            );
-        }
-
-        // 3. Read and sign the modified file as a first-time signature
+        // 2. Read and sign the modified file as a first-time signature
         $data   = $this->readFile($modifiedPath);
         $handler = $this->detectHandler($data);
 
-        $newHash      = hash('sha256', $data);
+        $innerHash    = hash('sha256', $data);
+        $newHash      = $this->applyHashSalt($innerHash);
         $unsignedInfo = $handler->getUnsignedInfo($data);
         $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
 
@@ -287,7 +304,9 @@ class ChainOfCustody
         if ($existing !== null) {
             // ----- Re-sign ---------------------------------------------------
             $oldHash   = $existing['hash'];
-            $cleanHash = $handler->computeOriginalHash($data, $existing);
+            $cleanHash = $this->applyHashSalt(
+                $handler->computeOriginalHash($data, $existing)
+            );
 
             if ($cleanHash === $oldHash) {
                 $oldRecord = $this->store->findByHash($oldHash);
@@ -296,11 +315,13 @@ class ChainOfCustody
                 }
             }
 
-            $newHash     = $handler->computeOriginalHash($data, $existing);
+            $innerHash   = $handler->computeOriginalHash($data, $existing);
+            $newHash     = $this->applyHashSalt($innerHash);
             $signedData  = $handler->updateSignature($data, $newHash, $existing);
         } else {
             // ----- First-time signature --------------------------------------
-            $newHash     = hash('sha256', $data);
+            $innerHash   = hash('sha256', $data);
+            $newHash     = $this->applyHashSalt($innerHash);
             $unsignedInfo = $handler->getUnsignedInfo($data);
             $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
         }

@@ -10,6 +10,9 @@ declare(strict_types=1);
  * interface for email verification during user registration.
  */
 return [
+    // Secret salt added to every SHA-256 hash. Generate with: php -r "echo bin2hex(random_bytes(16));"
+    'hash_salt' => '',
+
     // MySQL database
     'host'     => '127.0.0.1',
     'port'     => 3306,

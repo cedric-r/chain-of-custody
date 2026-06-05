@@ -1484,27 +1484,6 @@ if (! $dbAvailable) {
         }
     });
 
-    test('updateChainOfCustody throws when userId does not match', function () use ($coc, $aliceId, $bobId) {
-        $origPath = copyTif();
-        $modPath  = copyModifiedTif();
-        try {
-            // Sign the original as Alice
-            $coc->createSignature($origPath, $aliceId);
-
-            // Try to update as Bob — should throw
-            assertThrows(ChainOfCustodyException::class, function () use ($coc, $origPath, $modPath, $bobId) {
-                $coc->updateChainOfCustody($origPath, $modPath, $bobId);
-            });
-        } finally {
-            if (is_file($origPath)) {
-                unlink($origPath);
-            }
-            if (is_file($modPath)) {
-                unlink($modPath);
-            }
-        }
-    });
-
     test('updateChainOfCustody links new signature to original in database', function () use ($coc, $aliceId) {
         $origPath = copyTif();
         $modPath  = copyModifiedTif();
@@ -1546,6 +1525,55 @@ if (! $dbAvailable) {
         } finally {
             if (is_file($modPath)) {
                 unlink($modPath);
+            }
+        }
+    });
+
+    // ---- Salted hash ---------------------------------------------------------
+
+    echo "\n── Salted hash\n";
+
+    test('salted hash produces a different stored hash than unsalted', function () use ($aliceId) {
+        $path = copyTif();
+        try {
+            // Sign with no salt (default test config)
+            $unsalted = new ChainOfCustody(__DIR__ . '/config.php');
+            $unsalted->createSignature($path, $aliceId);
+            $resultUnsalted = $unsalted->checkSignature($path);
+            $unsaltedHash = $resultUnsalted['hash'];
+
+            // Sign a fresh copy with a salt
+            $path2 = copyTif();
+            try {
+                $saltedConfig = __DIR__ . '/_salted_config.php';
+                file_put_contents($saltedConfig, '<?php return [
+                    "hash_salt" => "aabbccdd11223344aabbccdd11223344",
+                    "host" => "127.0.0.1",
+                    "port" => 3306,
+                    "dbname" => "chain_of_custody_test",
+                    "username" => "coc_test",
+                    "password" => "coc_test_pass",
+                    "charset" => "utf8mb4",
+                ];');
+                $salted = new ChainOfCustody($saltedConfig);
+                $salted->createSignature($path2, $aliceId);
+                $resultSalted = $salted->checkSignature($path2);
+                $saltedHash = $resultSalted['hash'];
+
+                assertNotNull($unsaltedHash);
+                assertNotNull($saltedHash);
+                assertNotEquals($unsaltedHash, $saltedHash,
+                    'Salted hash should differ from unsalted hash on the same file');
+                assertTrue($resultSalted['authenticated'],
+                    'Salted signature should verify successfully');
+            } finally {
+                if (is_file($path2)) {
+                    unlink($path2);
+                }
+            }
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
             }
         }
     });
