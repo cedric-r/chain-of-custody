@@ -165,8 +165,11 @@ authentication. It provides Sign, Check, Lookup, Update, and Home tabs.
 - **Check** (public) — verify a signed file and view its chain of custody
 - **Lookup** (public) — upload an unsigned file to search the database by hash
 - **Update** (login required) — two-file update to extend the chain
+- **Feedback** (public) — send a message to the site admin via a form with
+  simple captcha (configurable Q&A defined in `CAPTCHA_QUESTIONS`)
 - Email verification via SMTP relay (configured in `www/config.php`)
 - Session-based authentication with bcrypt password hashing
+- Feedback submissions sent to `smtp.feedback_recipient` via `sendRawEmail()`
 
 Run with: `php -S localhost:8000 -t www/`
 
@@ -181,12 +184,13 @@ return [
     'username' => 'root',
     'password' => '',
     'charset'  => 'utf8mb4',
-    'smtp'     => [              // SMTP relay for email verification
-        'host'       => '...',
-        'port'       => 25,
-        'auth'       => false,
-        'from_email' => 'noreply@example.org',
-        'from_name'  => 'Chain of Custody',
+    'smtp'     => [              // SMTP relay for email verification + feedback
+        'host'               => '...',
+        'port'               => 25,
+        'auth'               => false,
+        'from_email'         => 'noreply@example.org',
+        'from_name'          => 'Chain of Custody',
+        'feedback_recipient' => '',   // Email that receives feedback form submissions
     ],
 ];
 ```

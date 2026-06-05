@@ -28,5 +28,6 @@ return [
         'auth'       => false,
         'from_email' => 'noreply@chainofcustody.org',
         'from_name'  => 'Chain of Custody',
+        'feedback_recipient' => '',   // Email address that receives feedback form submissions
     ],
 ];

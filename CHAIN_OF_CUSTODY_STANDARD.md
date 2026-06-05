@@ -340,9 +340,19 @@ authentication and the following tabs:
 | Check | Public | Verify a signed file + view chain of custody |
 | Lookup | Public | Upload an unsigned file to search the database by hash |
 | Update | Required | Two-file update to extend the chain |
+| Feedback | Public | Send a message to the site admin via a form with simple captcha |
 
 Email verification during registration uses an SMTP relay configured in the
-config file.
+config file. The feedback form also uses the same relay to deliver messages
+to the `smtp.feedback_recipient` address.
+
+## Captcha
+
+The feedback form includes a simple captcha to deter automated submissions.
+A random question is selected from the `CAPTCHA_QUESTIONS` array (e.g.
+"What is 2 + 2?", "What colour are tomatoes?"). The expected answer is
+stored server-side in the session. On submission the answer is compared
+case-insensitively. A new question is picked after each attempt.
 
 ---
 

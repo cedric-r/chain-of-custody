@@ -19,6 +19,15 @@ define('MAX_FILE_SIZE', 100 * 1024 * 1024);
 define('TEMP_FILE_TTL', 3600);
 define('CONFIG_PATH', __DIR__ . '/config.php');
 
+define('CAPTCHA_QUESTIONS', [
+    'What is 2 + 2?'                    => ['4'],
+    'What is 3 + 5?'                    => ['8'],
+    'What colour are tomatoes?'          => ['red'],
+    'What colour is the sky on a clear day?' => ['blue'],
+    'How many legs does a dog have?'     => ['4'],
+    'What is 10 - 3?'                   => ['7'],
+]);
+
 // ---------------------------------------------------------------------------
 // Session & Routing
 // ---------------------------------------------------------------------------
@@ -27,13 +36,13 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
 
 // Public actions (no auth needed)
-$publicActions = ['home', 'check', 'lookup', 'download', 'login', 'register', 'verify'];
+$publicActions = ['home', 'check', 'lookup', 'feedback', 'download', 'login', 'register', 'verify'];
 
 // Session
 $userId   = (int) ($_SESSION['user_id'] ?? 0);
@@ -73,6 +82,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         handleLookupAction();
         exit;
     }
+    if ($action === 'feedback') {
+        handleFeedbackAction();
+        exit;
+    }
     handlePost($action, $userId);
     exit;
 }
@@ -82,7 +95,7 @@ if ($action === 'download') {
     exit;
 }
 
-if (in_array($action, ['home', 'sign', 'check', 'lookup', 'update', 'login'], true)) {
+if (in_array($action, ['home', 'sign', 'check', 'lookup', 'feedback', 'update', 'login'], true)) {
     renderPage($action, null, $userName);
     exit;
 }
@@ -255,7 +268,10 @@ function handleVerifyEmail(string $token): void
 // SMTP email
 // ---------------------------------------------------------------------------
 
-function sendVerificationEmail(string $to, string $name, string $token, array $smtpConfig): bool
+/**
+ * Send a plain-text email via the configured SMTP relay.
+ */
+function sendRawEmail(string $to, string $subject, string $body, array $smtpConfig): bool
 {
     $host = $smtpConfig['host'] ?? '';
     $port = (int) ($smtpConfig['port'] ?? 25);
@@ -264,19 +280,9 @@ function sendVerificationEmail(string $to, string $name, string $token, array $s
         return false;
     }
 
-    $fromName  = $smtpConfig['from_name'] ?? 'Chain of Custody';
-    $fromAddr  = $smtpConfig['from_email'] ?? 'noreply@chainofcustody.org';
-    $ehloHost  = $smtpConfig['ehlo_host'] ?? parse_url($fromAddr, PHP_URL_HOST) ?: 'localhost';
-    $subject   = 'Verify your Photo Verify account';
-
-    $verifyUrl = 'http://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/?action=verify&token=' . urlencode($token);
-
-    $body = "Hello {$name},\n\n"
-          . "Thank you for registering with Photo Verify.\n\n"
-          . "Please verify your email address by clicking the link below:\n\n"
-          . "{$verifyUrl}\n\n"
-          . "This link expires in 1 hour.\n\n"
-          . "If you did not register, please ignore this email.\n";
+    $fromName = $smtpConfig['from_name'] ?? 'Chain of Custody';
+    $fromAddr = $smtpConfig['from_email'] ?? 'noreply@chainofcustody.org';
+    $ehloHost = $smtpConfig['ehlo_host'] ?? (parse_url($fromAddr, PHP_URL_HOST) ?: 'localhost');
 
     $socket = @stream_socket_client("tcp://{$host}:{$port}", $errno, $errstr, 15);
 
@@ -319,6 +325,26 @@ function sendVerificationEmail(string $to, string $name, string $token, array $s
     return true;
 }
 
+function sendVerificationEmail(string $to, string $name, string $token, array $smtpConfig): bool
+{
+    if (($smtpConfig['host'] ?? '') === '') {
+        return false;
+    }
+
+    $subject = 'Verify your Photo Verify account';
+
+    $verifyUrl = 'http://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/?action=verify&token=' . urlencode($token);
+
+    $body = "Hello {$name},\n\n"
+          . "Thank you for registering with Photo Verify.\n\n"
+          . "Please verify your email address by clicking the link below:\n\n"
+          . "{$verifyUrl}\n\n"
+          . "This link expires in 1 hour.\n\n"
+          . "If you did not register, please ignore this email.\n";
+
+    return sendRawEmail($to, $subject, $body, $smtpConfig);
+}
+
 // ---------------------------------------------------------------------------
 // Auth page renderers
 // ---------------------------------------------------------------------------
@@ -332,6 +358,60 @@ function renderLoginPage(?string $error, ?string $success = null): void
  * Render the login form inside the tabbed interface card.
  * Used by the "Log in" tab when the user is not authenticated.
  */
+/**
+ * Pick a random captcha question and store the expected answer in the session.
+ */
+function pickCaptcha(): string
+{
+    $questions = array_keys(CAPTCHA_QUESTIONS);
+    $question  = $questions[array_rand($questions)];
+    $_SESSION['captcha_answer'] = strtolower(trim(CAPTCHA_QUESTIONS[$question][0]));
+    return $question;
+}
+
+/**
+ * Render the feedback form inside the tabbed interface card.
+ */
+function renderFeedbackFormContent(?string $error): void
+{
+    $senderName  = htmlspecialchars($_POST['feedback_name'] ?? '');
+    $senderEmail = htmlspecialchars($_POST['feedback_email'] ?? '');
+    $message     = htmlspecialchars($_POST['feedback_message'] ?? '');
+    $captchaQ    = $_SESSION['captcha_question'] ?? pickCaptcha();
+    $_SESSION['captcha_question'] = $captchaQ;
+
+    if ($error !== null):
+        ?><div class="msg error"><?= htmlspecialchars($error) ?></div><?php
+    endif; ?>
+    <div class="blurb">
+        <h2>Feedback</h2>
+        <p>Send a message to the site administrator.</p>
+    </div>
+    <form method="post" action="?action=feedback">
+        <div class="form-group">
+            <label for="feedback_name">Your name</label>
+            <input type="text" name="feedback_name" id="feedback_name"
+                   value="<?= $senderName ?>" required>
+        </div>
+        <div class="form-group">
+            <label for="feedback_email">Your email</label>
+            <input type="email" name="feedback_email" id="feedback_email"
+                   value="<?= $senderEmail ?>" required>
+        </div>
+        <div class="form-group">
+            <label for="feedback_message">Message</label>
+            <textarea name="feedback_message" id="feedback_message" rows="5"
+                      style="width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical;" required><?= $message ?></textarea>
+        </div>
+        <div class="form-group">
+            <label for="captcha"><?= htmlspecialchars($captchaQ) ?></label>
+            <input type="text" name="captcha" id="captcha" placeholder="Type your answer" required>
+        </div>
+        <button type="submit" class="btn">Send Feedback</button>
+    </form>
+    <?php
+}
+
 function renderLoginFormContent(?string $error): void
 {
     $redirect = $_GET['redirect'] ?? ($_POST['redirect'] ?? '');
@@ -899,6 +979,70 @@ function handleLookupAction(): void
 }
 
 // ---------------------------------------------------------------------------
+// Feedback handler
+// ---------------------------------------------------------------------------
+
+function handleFeedbackAction(): void
+{
+    $name    = trim($_POST['feedback_name'] ?? '');
+    $email   = trim($_POST['feedback_email'] ?? '');
+    $message = trim($_POST['feedback_message'] ?? '');
+    $answer  = strtolower(trim($_POST['captcha'] ?? ''));
+    $expected = strtolower(trim($_SESSION['captcha_answer'] ?? ''));
+
+    // Validate fields
+    if ($name === '' || $email === '' || $message === '') {
+        renderPage('feedback', errorMsg('All fields are required.'), '');
+        return;
+    }
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        renderPage('feedback', errorMsg('Please enter a valid email address.'), '');
+        return;
+    }
+
+    if ($answer === '' || $answer !== $expected) {
+        // Pick a new captcha question on failure
+        unset($_SESSION['captcha_answer']);
+        unset($_SESSION['captcha_question']);
+        renderPage('feedback', errorMsg('Incorrect captcha answer. Please try again.'), '');
+        return;
+    }
+
+    // Send feedback email
+    try {
+        $config    = loadConfig();
+        $smtpConfig = $config['smtp'] ?? [];
+        $to        = $smtpConfig['feedback_recipient'] ?? '';
+
+        if ($to === '') {
+            renderPage('feedback', errorMsg(
+                'Feedback is not configured. Please contact the administrator directly.'
+            ), '');
+            return;
+        }
+
+        $subject = 'Feedback from ' . $name;
+        $body = "Name: {$name}\n"
+              . "Email: {$email}\n\n"
+              . "Message:\n{$message}\n";
+
+        $sent = sendRawEmail($to, $subject, $body, $smtpConfig);
+
+        if ($sent) {
+            // Clear captcha state
+            unset($_SESSION['captcha_answer']);
+            unset($_SESSION['captcha_question']);
+            renderPage('feedback', '<div class="msg success"><strong>Thank you!</strong><br>Your feedback has been sent.</div>', '');
+        } else {
+            renderPage('feedback', errorMsg('Failed to send your message. Please try again later.'), '');
+        }
+    } catch (Throwable $e) {
+        renderPage('feedback', errorMsg('An error occurred. Please try again later.'), '');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Download handler
 // ---------------------------------------------------------------------------
 
@@ -1122,8 +1266,9 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
         <a href="?action=home"   class="tab <?= $activeTab === 'home'   ? 'active' : '' ?>">Home</a>
         <a href="?action=sign"   class="tab <?= $activeTab === 'sign'   ? 'active' : '' ?>">Sign</a>
         <a href="?action=check"  class="tab <?= $activeTab === 'check'  ? 'active' : '' ?>">Check</a>
-        <a href="?action=lookup" class="tab <?= $activeTab === 'lookup' ? 'active' : '' ?>">Lookup</a>
-        <a href="?action=update" class="tab <?= $activeTab === 'update' ? 'active' : '' ?>">Update</a>
+        <a href="?action=lookup"  class="tab <?= $activeTab === 'lookup'   ? 'active' : '' ?>">Lookup</a>
+        <a href="?action=update"  class="tab <?= $activeTab === 'update'   ? 'active' : '' ?>">Update</a>
+        <a href="?action=feedback" class="tab <?= $activeTab === 'feedback' ? 'active' : '' ?>">Feedback</a>
         <?php if ($userId === 0): ?>
         <a href="?action=login"  class="tab <?= $activeTab === 'login'  ? 'active' : '' ?>">Log in</a>
         <?php endif; ?>
@@ -1151,6 +1296,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                 <ul>
                     <li><strong>Sign</strong> — embed a signature into a file (requires login)</li>
                     <li><strong>Check</strong> — verify an existing signature and view its chain of custody</li>
+                    <li><strong>Lookup</strong> — upload any unsigned file; the system computes its hash and searches the database for a matching signature record</li>
                     <li><strong>Update</strong> — sign a modified file while keeping the link to the original signature</li>
                 </ul>
             </div>
@@ -1180,6 +1326,8 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                 </div>
                 <button type="submit" class="btn">Look Up Hash</button>
             </form>
+        <?php elseif ($activeTab === 'feedback'): ?>
+            <?php renderFeedbackFormContent(null); ?>
         <?php else: ?>
             <form method="post" action="?action=<?= htmlspecialchars($activeTab) ?>" enctype="multipart/form-data">
 
