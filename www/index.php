@@ -25,14 +25,22 @@ define('CONFIG_PATH', __DIR__ . '/config.php');
 
 session_start();
 
-$action = $_GET['action'] ?? 'sign';
+$action = $_GET['action'] ?? 'home';
 
-if (!in_array($action, ['sign', 'check', 'update', 'download', 'login', 'register', 'logout', 'verify'], true)) {
-    $action = 'sign';
+$allowedActions = ['home', 'sign', 'check', 'update', 'download', 'login', 'register', 'logout', 'verify'];
+if (!in_array($action, $allowedActions, true)) {
+    $action = 'home';
 }
 
-// Public auth routes (no session required)
-if (in_array($action, ['login', 'register', 'verify'], true)) {
+// Public actions (no auth needed)
+$publicActions = ['home', 'check', 'download', 'login', 'register', 'verify'];
+
+// Session
+$userId   = (int) ($_SESSION['user_id'] ?? 0);
+$userName = $_SESSION['user_name'] ?? '';
+
+// Auth routes with their own UIs (not tabs)
+if (in_array($action, ['register', 'verify'], true)) {
     handleAuthRoute($action);
     exit;
 }
@@ -40,16 +48,15 @@ if (in_array($action, ['login', 'register', 'verify'], true)) {
 // Logout
 if ($action === 'logout') {
     session_destroy();
-    header('Location: ?action=login');
+    header('Location: ?action=home');
     exit;
 }
 
-// Protected routes — check authentication
-$userId   = (int) ($_SESSION['user_id'] ?? 0);
-$userName = $_SESSION['user_name'] ?? '';
-
-if ($userId === 0) {
-    renderLoginPage(null);
+// Auth check for protected routes
+$authRequired = !in_array($action, $publicActions, true);
+if ($authRequired && $userId === 0) {
+    // Redirect to login tab with a return-to URL
+    header('Location: ?action=login&redirect=' . urlencode($action));
     exit;
 }
 
@@ -58,6 +65,10 @@ if ($userId === 0) {
 // ---------------------------------------------------------------------------
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if ($action === 'login') {
+        handleLoginPost();
+        exit;
+    }
     handlePost($action, $userId);
     exit;
 }
@@ -67,13 +78,13 @@ if ($action === 'download') {
     exit;
 }
 
-if ($action === 'sign' || $action === 'check' || $action === 'update') {
+if (in_array($action, ['home', 'sign', 'check', 'update', 'login'], true)) {
     renderPage($action, null, $userName);
     exit;
 }
 
 // Fallback
-renderPage('sign', null, $userName);
+renderPage('home', null, $userName);
 
 // ---------------------------------------------------------------------------
 // Auth handlers
@@ -81,15 +92,6 @@ renderPage('sign', null, $userName);
 
 function handleAuthRoute(string $action): void
 {
-    if ($action === 'login') {
-        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-            handleLoginPost();
-        } else {
-            renderLoginPage(null);
-        }
-        return;
-    }
-
     if ($action === 'register') {
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             handleRegisterPost();
@@ -118,29 +120,33 @@ function handleLoginPost(): void
         $password = $_POST['password'] ?? '';
 
         if ($email === '' || $password === '') {
-            renderLoginPage('Please enter your email and password.');
+            renderPage('login', errorMsg('Please enter your email and password.'), '');
             return;
         }
 
         $user = $store->findUserByEmail($email);
 
         if ($user === null || !password_verify($password, $user['password_hash'])) {
-            renderLoginPage('Invalid email or password.');
+            renderPage('login', errorMsg('Invalid email or password.'), '');
             return;
         }
 
         if (!$user['email_verified']) {
-            renderLoginPage('Please verify your email address before logging in. Check your inbox.');
+            renderPage('login', errorMsg('Please verify your email address before logging in. Check your inbox.'), '');
             return;
         }
 
         $_SESSION['user_id']   = (int) $user['id'];
         $_SESSION['user_name'] = $user['name'];
 
-        header('Location: ?action=sign');
+        // Redirect to the original destination, or default to sign
+        $redirect = trim($_POST['redirect'] ?? '');
+        $allowed  = ['sign', 'check', 'update', 'home'];
+        $target   = in_array($redirect, $allowed, true) ? $redirect : 'sign';
+        header('Location: ?action=' . $target);
         exit;
     } catch (Throwable $e) {
-        renderLoginPage('An error occurred. Please try again.');
+        renderPage('login', errorMsg('An error occurred. Please try again.'), '');
     }
 }
 
@@ -316,6 +322,34 @@ function sendVerificationEmail(string $to, string $name, string $token, array $s
 function renderLoginPage(?string $error, ?string $success = null): void
 {
     renderAuthPage('login', $error, $success);
+}
+
+/**
+ * Render the login form inside the tabbed interface card.
+ * Used by the "Log in" tab when the user is not authenticated.
+ */
+function renderLoginFormContent(?string $error): void
+{
+    $redirect = $_GET['redirect'] ?? ($_POST['redirect'] ?? '');
+    if ($error !== null):
+        ?><div class="msg error"><?= htmlspecialchars($error) ?></div><?php
+    endif; ?>
+    <form method="post" action="?action=login">
+        <input type="hidden" name="redirect" value="<?= htmlspecialchars($redirect) ?>">
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" name="email" id="email" required>
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" name="password" id="password" required>
+        </div>
+        <button type="submit" class="btn">Log In</button>
+    </form>
+    <p style="margin-top:16px;font-size:13px;color:#666;">
+        Don't have an account? <a href="?action=register" style="color:#2563eb;font-weight:500;">Register</a>
+    </p>
+    <?php
 }
 
 function renderRegisterPage(?string $error): void
@@ -851,6 +885,7 @@ function errorMsg(string $text): string
 
 function renderPage(string $activeTab, ?string $resultHtml, string $userName): void
 {
+    $userId = (int) ($_SESSION['user_id'] ?? 0);
     ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -948,6 +983,12 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
 }
 .no-data { color: #888; font-style: italic; font-size: 14px; padding: 8px 0; }
 
+/* Blurb */
+.blurb h2 { font-size: 18px; margin-bottom: 12px; color: #1a1a2e; }
+.blurb p { font-size: 14px; color: #555; margin-bottom: 10px; line-height: 1.7; }
+.blurb ul { margin: 10px 0 0 20px; font-size: 14px; color: #555; line-height: 1.8; }
+.blurb ul li strong { color: #333; }
+
 /* Footer */
 .footer { text-align: center; margin-top: 28px; font-size: 12px; color: #999; }
 
@@ -978,9 +1019,13 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
     </div>
 
     <div class="tabs">
+        <a href="?action=home"   class="tab <?= $activeTab === 'home'   ? 'active' : '' ?>">Home</a>
         <a href="?action=sign"   class="tab <?= $activeTab === 'sign'   ? 'active' : '' ?>">Sign</a>
         <a href="?action=check"  class="tab <?= $activeTab === 'check'  ? 'active' : '' ?>">Check</a>
         <a href="?action=update" class="tab <?= $activeTab === 'update' ? 'active' : '' ?>">Update</a>
+        <?php if ($userId === 0): ?>
+        <a href="?action=login"  class="tab <?= $activeTab === 'login'  ? 'active' : '' ?>">Log in</a>
+        <?php endif; ?>
     </div>
 
     <div class="card">
@@ -988,6 +1033,35 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
         <?php if ($resultHtml !== null): ?>
             <?= $resultHtml ?>
             <p style="margin-top:16px"><a href="?action=<?= htmlspecialchars($activeTab) ?>" class="btn" style="background:#e4e6eb;color:#444;font-weight:500">&larr; Back</a></p>
+        <?php elseif ($activeTab === 'login'): ?>
+            <?php renderLoginFormContent(null); ?>
+        <?php elseif ($activeTab === 'home'): ?>
+            <div class="blurb">
+                <h2>Welcome to Photo Verify</h2>
+                <p>
+                    This tool lets you create and verify <strong>Chain of Custody</strong>
+                    signatures on image and raw camera files (JPEG, PNG, TIFF, CR2, CR3, NEF).
+                </p>
+                <p>
+                    A Chain of Custody signature embeds a SHA-256 hash of the file directly
+                    into the file itself using format-specific metadata mechanisms. Each signature
+                    is recorded in a database with the author's name, creating an auditable trail.
+                </p>
+                <ul>
+                    <li><strong>Sign</strong> — embed a signature into a file (requires login)</li>
+                    <li><strong>Check</strong> — verify an existing signature and view its chain of custody</li>
+                    <li><strong>Update</strong> — sign a modified file while keeping the link to the original signature</li>
+                </ul>
+            </div>
+            <h3 style="margin-top:24px;font-size:15px;">Quick Check — verify a signed file</h3>
+            <form method="post" action="?action=check" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="file_home">Select a signed image or raw file</label>
+                    <input type="file" name="file" id="file_home"
+                           accept=".jpg,.jpeg,.png,.tif,.tiff,.cr2,.cr3,.nef" required>
+                </div>
+                <button type="submit" class="btn">Check Signature</button>
+            </form>
         <?php else: ?>
             <form method="post" action="?action=<?= htmlspecialchars($activeTab) ?>" enctype="multipart/form-data">
 
