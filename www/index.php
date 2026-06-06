@@ -39,20 +39,20 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset', 'oauth_login', 'oauth_callback', 'apikeys'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset', 'oauth_login', 'oauth_callback', 'apikeys', 'resend_verification'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
 
 // Public actions (no auth needed)
-$publicActions = ['home', 'check', 'lookup', 'feedback', 'gdpr', 'download', 'login', 'register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback'];
+$publicActions = ['home', 'check', 'lookup', 'feedback', 'gdpr', 'download', 'login', 'register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback', 'resend_verification'];
 
 // Session
 $userId   = (int) ($_SESSION['user_id'] ?? 0);
 $userName = $_SESSION['user_name'] ?? '';
 
 // Auth routes with their own UIs (not tabs)
-if (in_array($action, ['register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback'], true)) {
+if (in_array($action, ['register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback', 'resend_verification'], true)) {
     handleAuthRoute($action);
     exit;
 }
@@ -116,6 +116,11 @@ renderPage('home', null, $userName);
 
 function handleAuthRoute(string $action): void
 {
+    if ($action === 'resend_verification') {
+        handleResendVerification();
+        return;
+    }
+
     if ($action === 'oauth_login') {
         handleOAuthLogin();
         return;
@@ -194,7 +199,9 @@ function handleLoginPost(): void
         }
 
         if (!$user['email_verified']) {
-            renderPage('login', errorMsg('Please verify your email address before logging in. Check your inbox.'), '');
+            $msg = 'Please verify your email address before logging in. Check your inbox.';
+            $msg .= ' <a href="?action=resend_verification&email=' . urlencode($email) . '" style="color:#2563eb;font-weight:500;">Resend verification email</a>';
+            renderPage('login', errorMsg($msg), '');
             return;
         }
 
@@ -716,6 +723,46 @@ body {
 </body>
 </html>
     <?php
+}
+
+function handleResendVerification(): void
+{
+    $email = trim($_GET['email'] ?? '');
+
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        renderLoginPage('Please provide a valid email address.');
+        return;
+    }
+
+    try {
+        $config = loadConfig();
+        $store  = new SignatureStore($config);
+        $user   = $store->findUserByEmail($email);
+
+        if ($user === null) {
+            renderLoginPage('If that email is registered, a verification email has been sent.');
+            return;
+        }
+
+        if ($user['email_verified']) {
+            renderLoginPage('Your email is already verified. You can log in.');
+            return;
+        }
+
+        // Generate a new token
+        $token   = bin2hex(random_bytes(32));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+
+        $store->setResetToken((int) $user['id'], $token, $expires);
+
+        // Send verification email
+        $smtpConfig = $config['smtp'] ?? [];
+        sendVerificationEmail($email, $user['name'], $token, $smtpConfig);
+
+        renderLoginPage(null, 'Verification email resent. Please check your inbox.');
+    } catch (Throwable $e) {
+        renderLoginPage('An error occurred. Please try again.');
+    }
 }
 
 function handleResetPost(string $token): void
