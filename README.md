@@ -13,7 +13,8 @@ PHP library that authenticates image and raw camera files (JPEG, PNG, TIFF, CR2,
 - **User accounts** — registration with email verification, session-based authentication
 - **OAuth login** — sign in with Google or GitHub (optional, configured in config)
 - **Auth provenance** — authentication method (local/google/github) shown next to user name in signature records
-- **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, Feedback, and Home tabs
+- **REST API** — remote signing, verification, and lookup with API key authentication
+- **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, API Keys, Feedback, and Home tabs
 - **Captcha** — feedback form protected by simple Q&A captcha
 
 ## Supported Formats
@@ -217,8 +218,13 @@ README.md                       # This file
 
 www/
 ├── index.php                   # Single-page web app with auth
-├── config.php                  # DB + SMTP configuration
+├── config.php                  # DB + SMTP + OAuth configuration
 └── photo-verify-logo-transparent.png
+
+api/
+├── index.php                   # REST API entry point
+├── config.php                  # API DB configuration
+└── CLAUDE.md                   # API documentation
 
 tests/
 ├── run.php                     # Full test suite (run: php tests/run.php)

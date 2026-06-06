@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 require_once __DIR__ . '/../src/OAuthProvider.php';
+require_once __DIR__ . '/../src/ApiKeyStore.php';
 
 define('ALLOWED_EXTENSIONS', ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'cr2', 'cr3', 'nef']);
 define('MAX_FILE_SIZE', 100 * 1024 * 1024);
@@ -37,7 +38,7 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset', 'oauth_login', 'oauth_callback'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset', 'oauth_login', 'oauth_callback', 'apikeys'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
@@ -87,6 +88,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         handleFeedbackAction();
         exit;
     }
+    if ($action === 'apikeys') {
+        handleApiKeysAction($userId);
+        exit;
+    }
     handlePost($action, $userId);
     exit;
 }
@@ -96,7 +101,7 @@ if ($action === 'download') {
     exit;
 }
 
-if (in_array($action, ['home', 'sign', 'check', 'lookup', 'feedback', 'gdpr', 'update', 'login'], true)) {
+if (in_array($action, ['home', 'sign', 'check', 'lookup', 'feedback', 'gdpr', 'update', 'login', 'apikeys'], true)) {
     renderPage($action, null, $userName);
     exit;
 }
@@ -197,7 +202,7 @@ function handleLoginPost(): void
 
         // Redirect to the original destination, or default to sign
         $redirect = trim($_POST['redirect'] ?? '');
-        $allowed  = ['sign', 'check', 'update', 'home'];
+        $allowed  = ['home', 'sign', 'check', 'lookup', 'update', 'apikeys', 'feedback', 'gdpr'];
         $target   = in_array($redirect, $allowed, true) ? $redirect : 'sign';
         header('Location: ?action=' . $target);
         exit;
@@ -301,7 +306,7 @@ function handleOAuthCallback(): void
         $_SESSION['user_name'] = $user['name'];
 
         $redirect = trim($_POST['redirect'] ?? '');
-        $allowed  = ['sign', 'check', 'update', 'home'];
+        $allowed  = ['home', 'sign', 'check', 'lookup', 'update', 'apikeys', 'feedback', 'gdpr'];
         $target   = in_array($redirect, $allowed, true) ? $redirect : 'sign';
         header('Location: ?action=' . $target);
         exit;
@@ -1474,6 +1479,124 @@ function handleFeedbackAction(): void
 }
 
 // ---------------------------------------------------------------------------
+// API Keys handler
+// ---------------------------------------------------------------------------
+
+function renderApiKeysContent(int $userId): void
+{
+    try {
+        $config   = loadConfig();
+        $keyStore = new ApiKeyStore($config);
+        $keys     = $keyStore->listByUser($userId);
+    } catch (Throwable) {
+        $keys = [];
+    }
+    ?>
+    <div class="blurb">
+        <h2>API Keys</h2>
+        <p>Generate API keys for remote access to the signing API at
+        <code>api.photo-verify.org</code>.</p>
+    </div>
+
+    <form method="post" action="?action=apikeys" style="margin-bottom:24px;">
+        <input type="hidden" name="action" value="generate">
+        <div class="form-group">
+            <label for="key_label">New key label</label>
+            <input type="text" name="label" id="key_label"
+                   placeholder="e.g. CI pipeline, phone upload"
+                   required style="max-width:300px;">
+        </div>
+        <button type="submit" class="btn">Generate Key</button>
+    </form>
+
+    <?php if (empty($keys)): ?>
+        <p style="color:#888;font-style:italic;">No API keys yet.</p>
+    <?php else: ?>
+        <h3 style="font-size:15px;margin-bottom:8px;">Your API Keys</h3>
+        <table class="chain-table">
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Key ID</th>
+                    <th>Last Used</th>
+                    <th>Created</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($keys as $k): ?>
+                <tr>
+                    <td><?= htmlspecialchars($k['label']) ?></td>
+                    <td><code>coc_<?= htmlspecialchars($k['prefix']) ?>...</code></td>
+                    <td><?= htmlspecialchars($k['last_used_at'] ?? 'never') ?></td>
+                    <td><?= htmlspecialchars($k['created_at']) ?></td>
+                    <td><?= $k['revoked_at'] !== null ? 'Revoked' : 'Active' ?></td>
+                    <td>
+                        <?php if ($k['revoked_at'] === null): ?>
+                        <form method="post" action="?action=apikeys" style="display:inline;">
+                            <input type="hidden" name="action" value="revoke">
+                            <input type="hidden" name="key_id" value="<?= (int) $k['id'] ?>">
+                            <button type="submit" class="btn"
+                                    style="background:#dc2626;padding:4px 12px;font-size:12px;"
+                                    onclick="return confirm('Revoke this key? This cannot be undone.')">Revoke</button>
+                        </form>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+    <?php
+}
+
+function handleApiKeysAction(int $userId): void
+{
+    try {
+        $config    = loadConfig();
+        $keyStore  = new ApiKeyStore($config);
+        $subAction = $_POST['action'] ?? '';
+
+        if ($subAction === 'generate') {
+            $label  = trim($_POST['label'] ?? '');
+            if ($label === '') {
+                renderPage('apikeys', errorMsg('Please enter a label for the key.'), $_SESSION['user_name'] ?? '');
+                return;
+            }
+
+            $result = $keyStore->generate($userId, $label);
+            $html  = '<div class="msg success">';
+            $html .= '<strong>Key generated!</strong><br>';
+            $html .= 'Make sure to copy this key now — it will not be shown again.<br><br>';
+            $html .= '<code style="font-size:16px;word-break:break-all;">' . htmlspecialchars($result['key']) . '</code>';
+            $html .= '</div>';
+
+            renderPage('apikeys', $html, $_SESSION['user_name'] ?? '');
+            return;
+        }
+
+        if ($subAction === 'revoke') {
+            $keyId = (int) ($_POST['key_id'] ?? 0);
+            if ($keyId <= 0) {
+                renderPage('apikeys', errorMsg('Invalid key ID.'), $_SESSION['user_name'] ?? '');
+                return;
+            }
+
+            $keyStore->revoke($keyId, $userId);
+            renderPage('apikeys', '<div class="msg success">Key revoked successfully.</div>', $_SESSION['user_name'] ?? '');
+            return;
+        }
+
+        renderPage('apikeys', errorMsg('Unknown action.'), $_SESSION['user_name'] ?? '');
+    } catch (RuntimeException $e) {
+        renderPage('apikeys', errorMsg(htmlspecialchars($e->getMessage())), $_SESSION['user_name'] ?? '');
+    } catch (Throwable $e) {
+        renderPage('apikeys', errorMsg('An error occurred.'), $_SESSION['user_name'] ?? '');
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Download handler
 // ---------------------------------------------------------------------------
 
@@ -1707,6 +1830,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
         <a href="?action=check"  class="tab <?= $activeTab === 'check'  ? 'active' : '' ?>">Check</a>
         <a href="?action=lookup"  class="tab <?= $activeTab === 'lookup'   ? 'active' : '' ?>">Lookup</a>
         <a href="?action=update"  class="tab <?= $activeTab === 'update'   ? 'active' : '' ?>">Update</a>
+        <a href="?action=apikeys" class="tab <?= $activeTab === 'apikeys'  ? 'active' : '' ?>">API Keys</a>
         <a href="?action=feedback" class="tab <?= $activeTab === 'feedback' ? 'active' : '' ?>">Feedback</a>
         <?php if ($userId === 0): ?>
         <a href="?action=login"  class="tab <?= $activeTab === 'login'  ? 'active' : '' ?>">Log in</a>
@@ -1766,6 +1890,8 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                 </div>
                 <button type="submit" class="btn">Look Up Hash</button>
             </form>
+        <?php elseif ($activeTab === 'apikeys'): ?>
+            <?php renderApiKeysContent($userId); ?>
         <?php elseif ($activeTab === 'feedback'): ?>
             <?php renderFeedbackFormContent(null); ?>
         <?php elseif ($activeTab === 'gdpr'): ?>
