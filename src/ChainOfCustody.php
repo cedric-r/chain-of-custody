@@ -43,6 +43,12 @@ class ChainOfCustody
     /** Secret salt appended to the hash input. */
     private string $hashSalt = '';
 
+    /** This node's unique identifier (16 hex chars, 8 random bytes). */
+    private string $nodeId = '';
+
+    /** Length of a node identifier in bytes. */
+    const NODE_ID_LEN = 16;
+
     /**
      * @param  string  $configPath  Path to a PHP file returning a DB-config array.
      * @throws ChainOfCustodyException  When the config file cannot be loaded.
@@ -75,7 +81,53 @@ class ChainOfCustody
         }
 
         $this->hashSalt = (string) ($config['hash_salt'] ?? '');
+        $this->nodeId   = (string) ($config['node_id'] ?? '');
         $this->store    = new SignatureStore($config);
+    }
+
+    /**
+     * Get this node's identifier.
+     */
+    public function getNodeId(): string
+    {
+        return $this->nodeId;
+    }
+
+    /**
+     * Build the signature payload for embedding in a file.
+     * Format: [1 byte: node_id_len] [node_id] [':'] [inner_data...]
+     */
+    private function buildSignaturePayload(string $innerData): string
+    {
+        if ($this->nodeId === '') {
+            return $innerData;
+        }
+        return pack('C', strlen($this->nodeId)) . $this->nodeId . ':' . $innerData;
+    }
+
+    /**
+     * Extract the node_id and actual hash from a signature payload.
+     * Handles both the new format (with node_id) and legacy format (no node_id).
+     *
+     * @return array{nodeId: string, hashData: string}
+     */
+    private function parseSignaturePayload(string $payload): array
+    {
+        if ($payload === '' || strlen($payload) < 2) {
+            return ['nodeId' => '', 'hashData' => $payload];
+        }
+
+        $len = ord($payload[0]);
+
+        // Validate: length byte should be reasonable (0-32) and match expected format
+        if ($len > 0 && $len < 32 && strlen($payload) > $len + 2 && $payload[$len + 1] === ':') {
+            $nodeId   = substr($payload, 1, $len);
+            $hashData = substr($payload, $len + 2);
+            return ['nodeId' => $nodeId, 'hashData' => $hashData];
+        }
+
+        // Legacy format — no node_id prefix
+        return ['nodeId' => '', 'hashData' => $payload];
     }
 
     // ------------------------------------------------------------------
@@ -178,18 +230,28 @@ class ChainOfCustody
             ];
         }
 
-        $storedHash      = $existing['hash'];
-        $computedInner   = $handler->computeOriginalHash($data, $existing);
-        $computedSalted  = $this->applyHashSalt($computedInner);
-        $hashValid       = hash_equals($storedHash, $computedSalted);
+        $storedPayload  = $existing['hash'];
+        $parsed         = $this->parseSignaturePayload($storedPayload);
+        $storedHash     = rtrim($parsed['hashData'], "\0");
+        $nodeId         = $parsed['nodeId'];
+
+        $computedInner  = $handler->computeOriginalHash($data, $existing);
+        $computedSalted = $this->applyHashSalt($computedInner);
+        $hashValid      = hash_equals($storedHash, $computedSalted);
 
         $dbRecord = $hashValid ? $this->store->findByHash($storedHash) : null;
+
+        // If the file was signed by a different node, mark it as requiring
+        // remote verification (the caller can forward to the owning node).
+        $isRemote = $nodeId !== '' && $nodeId !== $this->nodeId;
 
         return [
             'authenticated' => $hashValid && $dbRecord !== null,
             'hash_valid'    => $hashValid,
             'hash'          => $storedHash,
             'signature'     => $dbRecord,
+            'node_id'       => $nodeId,
+            'requires_remote' => $isRemote,
         ];
     }
 
@@ -313,17 +375,18 @@ class ChainOfCustody
         $data   = $this->readFile($modifiedPath);
         $handler = $this->detectHandler($data);
 
-        $innerHash    = hash('sha256', $data);
-        $newHash      = $this->applyHashSalt($innerHash);
+        $innerHash   = hash('sha256', $data);
+        $saltedHash  = $this->applyHashSalt($innerHash);
+        $payload     = $this->buildSignaturePayload($saltedHash);
         $unsignedInfo = $handler->getUnsignedInfo($data);
-        $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
+        $signedData  = $handler->signUnsigned($data, $payload, $unsignedInfo);
 
         // 4. Store with previous_id linking to the original record
-        $this->store->store($newHash, $userId, basename($modifiedPath), (int) $originalRecord['id']);
+        $this->store->store($saltedHash, $userId, basename($modifiedPath), (int) $originalRecord['id']);
 
         return [
             'data'     => $signedData,
-            'hash'     => $newHash,
+            'hash'     => $saltedHash,
             'original' => $originalRecord,
         ];
     }
@@ -346,7 +409,9 @@ class ChainOfCustody
 
         if ($existing !== null) {
             // ----- Re-sign ---------------------------------------------------
-            $oldHash   = $existing['hash'];
+            $oldPayload = $existing['hash'];
+            $oldHash    = rtrim($this->parseSignaturePayload($oldPayload)['hashData'], "\0");
+
             $cleanHash = $this->applyHashSalt(
                 $handler->computeOriginalHash($data, $existing)
             );
@@ -358,20 +423,22 @@ class ChainOfCustody
                 }
             }
 
-            $innerHash   = $handler->computeOriginalHash($data, $existing);
-            $newHash     = $this->applyHashSalt($innerHash);
-            $signedData  = $handler->updateSignature($data, $newHash, $existing);
+            $innerHash  = $handler->computeOriginalHash($data, $existing);
+            $saltedHash = $this->applyHashSalt($innerHash);
+            $payload    = $this->buildSignaturePayload($saltedHash);
+            $signedData = $handler->updateSignature($data, $payload, $existing);
         } else {
             // ----- First-time signature --------------------------------------
             $innerHash   = hash('sha256', $data);
-            $newHash     = $this->applyHashSalt($innerHash);
+            $saltedHash  = $this->applyHashSalt($innerHash);
+            $payload     = $this->buildSignaturePayload($saltedHash);
             $unsignedInfo = $handler->getUnsignedInfo($data);
-            $signedData   = $handler->signUnsigned($data, $newHash, $unsignedInfo);
+            $signedData  = $handler->signUnsigned($data, $payload, $unsignedInfo);
         }
 
-        $this->store->store($newHash, $userId, $fileName, $previousId);
+        $this->store->store($saltedHash, $userId, $fileName, $previousId);
 
-        return ['data' => $signedData, 'hash' => $newHash];
+        return ['data' => $signedData, 'hash' => $saltedHash];
     }
 
     /**

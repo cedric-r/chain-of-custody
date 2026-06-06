@@ -1,0 +1,14 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Generate a random node identifier for the distributed Chain of Custody system.
+ *
+ * Usage:
+ *   php bin/generate-node-id
+ *
+ * Output: a1b2c3d4e5f67890
+ *
+ * Add the output to your config.php as:
+ *   'node_id' => 'a1b2c3d4e5f67890',
+ */
+echo bin2hex(random_bytes(8)) . "\n";

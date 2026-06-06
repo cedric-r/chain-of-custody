@@ -27,7 +27,7 @@ class Cr3SignatureHandler extends ImageSignatureHandler
 
     /**
      * Total overhead of the CoC box:
-     *   8 (header) + 65 (hash + NUL) = 73 bytes.
+     *   8 (header) + HASH_STORED_BYTES = 91 bytes.
      */
     const OVERHEAD_BYTES = 73;
 

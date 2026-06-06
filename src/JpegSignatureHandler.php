@@ -28,7 +28,7 @@ class JpegSignatureHandler extends ImageSignatureHandler
 
     /**
      * Total size of the APP8 segment in the file:
-     *   2 (FF E8) + 2 (length) + 4 (CoC\0) + 65 (hash) = 73 bytes
+     *   2 (FF E8) + 2 (length) + 4 (CoC\0) + HASH_STORED_BYTES = 91 bytes
      */
     const SEGMENT_BYTES = 73;
 

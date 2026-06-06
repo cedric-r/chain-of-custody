@@ -14,6 +14,7 @@ PHP library that authenticates image and raw camera files (JPEG, PNG, TIFF, CR2,
 - **OAuth login** — sign in with Google or GitHub (optional, configured in config)
 - **Auth provenance** — authentication method (local/google/github) shown next to user name in signature records
 - **REST API** — remote signing, verification, and lookup with API key authentication
+- **Distributed** — per-node identifiers for federated verification across independent servers
 - **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, API Keys, Feedback, and Home tabs
 - **Captcha** — feedback form protected by simple Q&A captcha
 
@@ -121,6 +122,7 @@ file_put_contents('modified-signed.tif', $result['data']);
 <?php
 return [
     'hash_salt' => '',            // Secret salt (generate: php -r "echo bin2hex(random_bytes(16));")
+    'node_id'   => '',            // Unique 16-char hex node ID (generate: php bin/generate-node-id)
     'host'      => '127.0.0.1',   // MySQL host
     'port'      => 3306,          // MySQL port
     'dbname'    => 'chain_of_custody',
