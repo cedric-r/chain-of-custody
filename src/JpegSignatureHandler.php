@@ -30,7 +30,7 @@ class JpegSignatureHandler extends ImageSignatureHandler
      * Total size of the APP8 segment in the file:
      *   2 (FF E8) + 2 (length) + 4 (CoC\0) + HASH_STORED_BYTES = 91 bytes
      */
-    const SEGMENT_BYTES = 73;
+    const SEGMENT_BYTES = 91;
 
     /** Marker type for SOS — after this comes compressed data, not markers. */
     const SOS_MARKER = "\xDA";

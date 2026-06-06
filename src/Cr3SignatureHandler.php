@@ -29,7 +29,7 @@ class Cr3SignatureHandler extends ImageSignatureHandler
      * Total overhead of the CoC box:
      *   8 (header) + HASH_STORED_BYTES = 91 bytes.
      */
-    const OVERHEAD_BYTES = 73;
+    const OVERHEAD_BYTES = 91;
 
     // ------------------------------------------------------------------
     //  ImageSignatureHandler implementation
@@ -111,7 +111,8 @@ class Cr3SignatureHandler extends ImageSignatureHandler
      */
     public function signUnsigned(string $data, string $hash, array $info): string
     {
-        $boxData = $hash . "\0";
+        $boxData = str_pad($hash, self::HASH_STORED_BYTES, "\0");
+        $boxData = substr($boxData, 0, self::HASH_STORED_BYTES);
         $boxSize = self::BOX_HEADER_BYTES + strlen($boxData);
 
         $signed  = $data;

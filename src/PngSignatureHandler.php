@@ -35,7 +35,7 @@ class PngSignatureHandler extends ImageSignatureHandler
      * Total size of the coCs chunk:
      *   4 (length) + 4 (type) + HASH_STORED_BYTES + 4 (CRC) = 95 bytes
      */
-    const CHUNK_BYTES = 77;
+    const CHUNK_BYTES = 95;
 
     // ------------------------------------------------------------------
     //  ImageSignatureHandler implementation

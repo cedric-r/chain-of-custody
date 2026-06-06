@@ -382,8 +382,8 @@ test('signs an unsigned file by appending IFD', function () use ($tiff) {
     $signed = $tiff->signUnsigned($data, $originalHash, $unsignedInfo);
 
     assertTrue(strlen($signed) > strlen($data), 'Signed file should be larger');
-    assertEquals(strlen($data) + 83, strlen($signed),
-        'File should grow by exactly 83 bytes (18 IFD + 65 hash)');
+    assertEquals(strlen($data) + 101, strlen($signed),
+        'File should grow by exactly 101 bytes (18 IFD + 83 hash)');
 });
 
 test('find() locates the signature after signing', function () use ($tiff) {
@@ -586,8 +586,8 @@ test('signs an unsigned JPEG by inserting APP8 marker', function () use ($jpeg) 
     $signed = $jpeg->signUnsigned($data, $originalHash, $info);
 
     assertTrue(strlen($signed) > strlen($data), 'Signed JPEG should be larger');
-    assertEquals(strlen($data) + 73, strlen($signed),
-        'JPEG should grow by exactly 73 bytes (APP8 segment)');
+    assertEquals(strlen($data) + 91, strlen($signed),
+        'JPEG should grow by exactly 91 bytes (APP8 segment)');
 });
 
 test('signUnsigned inserts APP8 with our identifier', function () use ($jpeg) {
@@ -613,7 +613,7 @@ test('find() locates the signature after signing JPEG', function () use ($jpeg) 
     assertNotNull($found, 'find() should return info for signed JPEG');
     assertEquals($originalHash, $found['hash']);
     assertEquals(2, $found['markerPos'], 'Marker should be at position 2');
-    assertEquals(73, $found['totalSegmentBytes']);
+    assertEquals(91, $found['totalSegmentBytes']);
 });
 
 test('computeOriginalHash matches original JPEG hash', function () use ($jpeg) {
@@ -743,8 +743,8 @@ test('signs an unsigned PNG by inserting coCs chunk', function () use ($png) {
     $signed = $png->signUnsigned($data, $originalHash, $info);
 
     assertTrue(strlen($signed) > strlen($data), 'Signed PNG should be larger');
-    assertEquals(strlen($data) + 77, strlen($signed),
-        'PNG should grow by exactly 77 bytes (coCs chunk)');
+    assertEquals(strlen($data) + 95, strlen($signed),
+        'PNG should grow by exactly 95 bytes (coCs chunk)');
 });
 
 test('signUnsigned inserts coCs with correct structure', function () use ($png) {
@@ -755,7 +755,7 @@ test('signUnsigned inserts coCs with correct structure', function () use ($png) 
     $signed = $png->signUnsigned($data, $originalHash, $info);
 
     // After PNG sig (8) + IHDR chunk (25), coCs should be at position 33
-    assertEquals(65, unpack('N', substr($signed, 33, 4))[1], 'Data length should be 65');
+    assertEquals(83, unpack('N', substr($signed, 33, 4))[1], 'Data length should be 83');
     assertEquals('coCs', substr($signed, 37, 4), 'Chunk type should be coCs');
 });
 
@@ -770,7 +770,7 @@ test('find() locates the signature after signing PNG', function () use ($png) {
     assertNotNull($found, 'find() should return info for signed PNG');
     assertEquals($originalHash, $found['hash']);
     assertEquals(33, $found['chunkPos'], 'coCs chunk should be at position 33');
-    assertEquals(77, $found['totalChunkBytes']);
+    assertEquals(95, $found['totalChunkBytes']);
 });
 
 test('computeOriginalHash matches original PNG hash', function () use ($png) {
@@ -815,9 +815,9 @@ test('updateSignature recalculates CRC correctly', function () use ($png) {
     $resigned = $png->updateSignature($signed, $hash2, $info1);
 
     // Verify the CRC is valid for the new data
-    $crcPos  = 33 + 8 + 65; // chunkPos + len+type + hash
+    $crcPos  = 33 + 8 + 83; // chunkPos + len+type + hash
     $storedCrc = unpack('N', substr($resigned, $crcPos, 4))[1];
-    $expectedCrc = crc32('coCs' . str_pad($hash2, 65, "\0")) & 0xFFFFFFFF;
+    $expectedCrc = crc32('coCs' . str_pad($hash2, 83, "\0")) & 0xFFFFFFFF;
     assertEquals($expectedCrc, $storedCrc, 'CRC should be recalculated');
 });
 

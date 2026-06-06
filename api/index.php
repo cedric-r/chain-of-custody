@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 require_once __DIR__ . '/../src/ApiKeyStore.php';
+require_once __DIR__ . '/../src/NodeResolver.php';
 
 define('CONFIG_PATH', __DIR__ . '/config.php');
 define('MAX_FILE_SIZE', 100 * 1024 * 1024);
@@ -170,6 +171,50 @@ function handleUpdate(ChainOfCustody $coc, int $userId): void
     }
 }
 
+function handleForward(): void
+{
+    $upload = getUploadedFile('file');
+    try {
+        $coc = new ChainOfCustody(CONFIG_PATH);
+        $checkResult = $coc->checkSignature($upload['path']);
+
+        $nodeId = $checkResult['node_id'] ?? '';
+
+        if ($nodeId === '') {
+            jsonError(400, 'No node identifier found in the file. This file may have been signed by a legacy node.');
+        }
+
+        if (!$checkResult['requires_remote']) {
+            // The file belongs to this node — return the local verification result
+            $chain = $coc->checkChainOfCustody($upload['path']);
+            jsonResponse([
+                'status'        => 'ok',
+                'forwarded'     => false,
+                'authenticated' => $checkResult['authenticated'],
+                'hash_valid'    => $checkResult['hash_valid'],
+                'hash'          => $checkResult['hash'],
+                'signature'     => $checkResult['signature'],
+                'chain'         => $chain['chain'],
+            ]);
+            return;
+        }
+
+        // Forward to the owning node
+        $remoteResult = NodeResolver::forward($nodeId, $upload['path']);
+
+        jsonResponse([
+            'status'    => 'ok',
+            'forwarded' => true,
+            'node_id'   => $nodeId,
+            'result'    => $remoteResult,
+        ]);
+    } catch (RuntimeException $e) {
+        jsonError(502, 'Forwarding failed: ' . $e->getMessage());
+    } finally {
+        cleanTemp($upload['path']);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
@@ -181,7 +226,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // Parse the route
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-$allowedRoutes = ['/sign', '/check', '/lookup', '/update'];
+$allowedRoutes = ['/sign', '/check', '/lookup', '/update', '/forward'];
 
 if (!in_array($path, $allowedRoutes, true)) {
     jsonError(404, 'Not found. Available endpoints: /sign, /check, /lookup, /update');
@@ -211,10 +256,11 @@ try {
     $coc = new ChainOfCustody(CONFIG_PATH);
 
     match ($path) {
-        '/sign'   => handleSign($coc, $userId),
-        '/check'  => handleCheck($coc),
-        '/lookup' => handleLookup($coc),
-        '/update' => handleUpdate($coc, $userId),
+        '/sign'    => handleSign($coc, $userId),
+        '/check'   => handleCheck($coc),
+        '/lookup'  => handleLookup($coc),
+        '/update'  => handleUpdate($coc, $userId),
+        '/forward' => handleForward(),
     };
 } catch (RuntimeException $e) {
     jsonError(401, $e->getMessage());

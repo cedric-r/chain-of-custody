@@ -1262,6 +1262,11 @@ function handleCheckAction(
         $html .= '<strong>✅ Signature Valid</strong><br>';
         $html .= 'The file ' . htmlspecialchars($originalName) . ' has not been tampered with.<br><br>';
         $html .= 'Hash: <code>' . htmlspecialchars($result['hash'] ?? '') . '</code><br>';
+
+        if (!empty($result['node_id'])) {
+            $html .= 'Node: <code>' . htmlspecialchars($result['node_id']) . '</code><br>';
+        }
+
         $html .= 'Signed by: ' . htmlspecialchars($result['signature']['author_name'])
                . ' (' . htmlspecialchars($result['signature']['email'] ?? '') . ', '
                . htmlspecialchars($result['signature']['auth_provider'] ?? 'local') . ')<br>';
@@ -1285,6 +1290,16 @@ function handleCheckAction(
         $html .= '<div class="msg info">';
         $html .= '<strong>No Signature Found</strong><br>';
         $html .= 'This file does not contain a Chain of Custody signature.';
+        $html .= '</div>';
+    }
+
+    // Remote node notice
+    if (!empty($result['node_id']) && !empty($result['requires_remote'])) {
+        $html .= '<div class="msg info">';
+        $html .= '<strong>🔗 Signed by a different node</strong><br>';
+        $html .= 'This file was signed by node <code>' . htmlspecialchars($result['node_id']) . '</code>. ';
+        $html .= 'To verify it, use the API:<br>';
+        $html .= '<code style="font-size:12px;">curl -X POST https://' . htmlspecialchars($result['node_id']) . '.photo-verify.org/verify -F "file=@..."</code>';
         $html .= '</div>';
     }
 

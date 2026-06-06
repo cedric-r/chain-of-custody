@@ -27,8 +27,9 @@ abstract class ImageSignatureHandler
     /** Length of a SHA-256 hex digest. */
     const HASH_HEX_LEN = 64;
 
-    /** Total bytes stored for the hash in the file (hex + NUL). */
-    const HASH_STORED_BYTES = 65;
+    /** Total bytes stored for the hash (hex + NUL), including optional node_id prefix.
+     *  With node_id: 1 + 16 + 1 + 64 + 1 = 83. Without: 64 + 1 = 65. */
+    const HASH_STORED_BYTES = 83;
 
     // ------------------------------------------------------------------
     //  Abstract — each format must implement
