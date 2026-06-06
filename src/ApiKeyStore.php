@@ -83,7 +83,7 @@ class ApiKeyStore
         $hash = hash('sha256', $key);
 
         $stmt = $this->pdo->prepare(
-            'SELECT id, user_id, label, prefix FROM api_keys
+            'SELECT id, user_id, label, key_prefix AS prefix FROM api_keys
              WHERE key_hash = :hash
              LIMIT 1'
         );
@@ -120,7 +120,7 @@ class ApiKeyStore
     public function listByUser(int $userId): array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, prefix, label, last_used_at, created_at, revoked_at
+            'SELECT id, key_prefix AS prefix, label, last_used_at, created_at, revoked_at
              FROM api_keys
              WHERE user_id = :user_id
              ORDER BY created_at DESC'

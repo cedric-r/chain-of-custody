@@ -31,7 +31,7 @@ function jsonResponse(array $data, int $code = 200): void
 {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -42,8 +42,25 @@ function jsonError(int $code, string $message): void
 
 function getUploadedFile(string $field): array
 {
-    if (!isset($_FILES[$field]) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
-        jsonError(400, "Missing or invalid file field: {$field}");
+    if (!isset($_FILES[$field])) {
+        jsonError(400, "Missing file field: {$field}");
+    }
+
+    $file = $_FILES[$field];
+    $err  = $file['error'];
+
+    if ($err !== UPLOAD_ERR_OK) {
+        $messages = [
+            UPLOAD_ERR_INI_SIZE   => 'File exceeds server upload limit (upload_max_filesize).',
+            UPLOAD_ERR_FORM_SIZE  => 'File exceeds form size limit.',
+            UPLOAD_ERR_PARTIAL    => 'File was only partially uploaded.',
+            UPLOAD_ERR_NO_FILE    => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server is missing a temporary upload directory.',
+            UPLOAD_ERR_CANT_WRITE => 'Server failed to write the uploaded file.',
+            UPLOAD_ERR_EXTENSION  => 'A PHP extension stopped the upload.',
+        ];
+        $msg = $messages[$err] ?? "Upload error code {$err}.";
+        jsonError(400, $msg);
     }
 
     $file = $_FILES[$field];
