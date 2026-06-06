@@ -310,6 +310,12 @@ demo/
 ├── update.php    # php demo/update.php <signed> <modified>  → <base>-updated.<ext>
 ```
 
+The test suite covers all handlers and integration flows:
+
+```bash
+php tests/run.php
+```
+
 Example workflow:
 
 ```bash

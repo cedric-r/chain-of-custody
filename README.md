@@ -11,6 +11,8 @@ PHP library that authenticates image and raw camera files (JPEG, PNG, TIFF, CR2,
 - **Multi-format** — auto-detects format from file content, no extension sniffing
 - **Salted hashes** — optional configurable salt prevents pre-computed hash lookups
 - **User accounts** — registration with email verification, session-based authentication
+- **OAuth login** — sign in with Google or GitHub (optional, configured in config)
+- **Auth provenance** — authentication method (local/google/github) shown next to user name in signature records
 - **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, Feedback, and Home tabs
 - **Captcha** — feedback form protected by simple Q&A captcha
 
@@ -132,6 +134,20 @@ return [
         'from_name'          => 'Chain of Custody',
         'feedback_recipient' => '',   // Admin email for feedback submissions
     ],
+
+    // OAuth provider credentials (optional — omit for local-only auth)
+    'oauth' => [
+        'google' => [
+            'client_id'     => '',
+            'client_secret' => '',
+            'redirect_uri'  => 'https://photo-verify.org/?action=oauth_callback&provider=google',
+        ],
+        'github' => [
+            'client_id'     => '',
+            'client_secret' => '',
+            'redirect_uri'  => 'https://photo-verify.org/?action=oauth_callback&provider=github',
+        ],
+    ],
 ];
 ```
 
@@ -150,6 +166,8 @@ return [
 | email_verified | TINYINT(1) | 1 after email verification |
 | verification_token | VARCHAR(64) | Token for email verification link |
 | verification_token_expires | DATETIME | Token expiry |
+| auth_provider | VARCHAR(32) | Authentication method: local, google, github |
+| provider_id | VARCHAR(255) | Unique ID from the OAuth provider |
 | created_at | TIMESTAMP | Account creation time |
 
 **`chain_of_custody_signatures`** — signature records
@@ -188,6 +206,7 @@ src/
 ├── JpegSignatureHandler.php    # JPEG APP8 marker
 ├── PngSignatureHandler.php     # PNG coCs chunk
 ├── Cr3SignatureHandler.php     # CR3 ISOBMFF box
+├── OAuthProvider.php           # Google/GitHub OAuth 2.0 helper
 └── SignatureStore.php          # PDO/MySQL store for signature records + users
 
 config.example.php              # Template DB + SMTP configuration
@@ -200,6 +219,11 @@ www/
 ├── index.php                   # Single-page web app with auth
 ├── config.php                  # DB + SMTP configuration
 └── photo-verify-logo-transparent.png
+
+tests/
+├── run.php                     # Full test suite (run: php tests/run.php)
+├── config.php                  # Test DB configuration
+└── config.example.php          # Template for test config
 
 demo/
 ├── sign.php, check.php, update.php   # CLI demo scripts

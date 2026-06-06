@@ -23,11 +23,25 @@ return [
 
     // SMTP relay for outbound email (email verification)
     'smtp'     => [
-        'host'       => '192.168.233.9',
-        'port'       => 25,
-        'auth'       => false,
-        'from_email' => 'noreply@chainofcustody.org',
-        'from_name'  => 'Chain of Custody',
-        'feedback_recipient' => '',   // Email address that receives feedback form submissions
+        'host'               => '192.168.233.9',
+        'port'               => 25,
+        'auth'               => false,
+        'from_email'         => 'noreply@chainofcustody.org',
+        'from_name'          => 'Chain of Custody',
+        'feedback_recipient' => '',   // Email that receives feedback form submissions
+    ],
+
+    // OAuth provider credentials (optional — omit for local-only auth)
+    'oauth' => [
+        'google' => [
+            'client_id'     => '',
+            'client_secret' => '',
+            'redirect_uri'  => 'https://photo-verify.org/?action=oauth_callback&provider=google',
+        ],
+        'github' => [
+            'client_id'     => '',
+            'client_secret' => '',
+            'redirect_uri'  => 'https://photo-verify.org/?action=oauth_callback&provider=github',
+        ],
     ],
 ];

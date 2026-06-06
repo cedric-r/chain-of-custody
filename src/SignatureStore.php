@@ -85,7 +85,7 @@ class SignatureStore
     {
         $stmt = $this->pdo->prepare(
             'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
-                    s.previous_id, s.created_at, u.email
+                    s.previous_id, s.created_at, u.email, u.auth_provider
              FROM chain_of_custody_signatures s
              LEFT JOIN users u ON u.id = s.user_id
              WHERE s.signature_hash = :hash
@@ -116,7 +116,7 @@ class SignatureStore
         while ($nextId !== null) {
             $stmt = $this->pdo->prepare(
                 'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
-                        s.previous_id, s.created_at, u.email
+                        s.previous_id, s.created_at, u.email, u.auth_provider
                  FROM chain_of_custody_signatures s
                  LEFT JOIN users u ON u.id = s.user_id
                  WHERE s.id = :id
@@ -182,7 +182,8 @@ class SignatureStore
     public function findUserByEmail(string $email): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, email, password_hash, name, email_verified, created_at
+            'SELECT id, email, password_hash, name, email_verified,
+                    auth_provider, provider_id, created_at
              FROM users
              WHERE email = :email
              LIMIT 1'
@@ -203,7 +204,8 @@ class SignatureStore
     public function findUserByVerificationToken(string $token): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, email, name, email_verified, verification_token_expires
+            'SELECT id, email, name, email_verified, verification_token_expires,
+                    auth_provider
              FROM users
              WHERE verification_token = :token
              LIMIT 1'
@@ -231,6 +233,57 @@ class SignatureStore
     }
 
     /**
+     * Find an OAuth user by provider + provider_id, or create one if they
+     * don't exist yet. If the email is already registered under a different
+     * provider, the existing account is returned (linking is not automatic
+     * for security reasons).
+     *
+     * @return int  User ID.
+     */
+    public function findOrCreateOAuthUser(
+        string $provider,
+        string $providerId,
+        string $email,
+        string $name,
+    ): int {
+        // Look up by provider + provider_id first
+        $stmt = $this->pdo->prepare(
+            'SELECT id FROM users WHERE auth_provider = :provider AND provider_id = :pid LIMIT 1'
+        );
+        $stmt->execute([':provider' => $provider, ':pid' => $providerId]);
+        $row = $stmt->fetch();
+
+        if ($row !== false) {
+            return (int) $row['id'];
+        }
+
+        // Check if the email already exists (different provider)
+        $stmt = $this->pdo->prepare('SELECT id, auth_provider FROM users WHERE email = :email LIMIT 1');
+        $stmt->execute([':email' => $email]);
+        $existing = $stmt->fetch();
+
+        if ($existing !== false) {
+            // Return the existing user — they can log in with their original method
+            return (int) $existing['id'];
+        }
+
+        // Create a new user
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO users (email, password_hash, name, email_verified, auth_provider, provider_id)
+             VALUES (:email, :password_hash, :name, 1, :provider, :pid)'
+        );
+        $stmt->execute([
+            ':email'         => $email,
+            ':password_hash' => '', // OAuth users have no local password
+            ':name'          => $name,
+            ':provider'      => $provider,
+            ':pid'           => $providerId,
+        ]);
+
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    /**
      * Find a user by their ID.
      *
      * @return array|null  User row or NULL if not found.
@@ -238,7 +291,7 @@ class SignatureStore
     public function findUserById(int $userId): ?array
     {
         $stmt = $this->pdo->prepare(
-            'SELECT id, email, name, email_verified, created_at
+            'SELECT id, email, name, email_verified, auth_provider, provider_id, created_at
              FROM users
              WHERE id = :id
              LIMIT 1'

@@ -13,6 +13,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../src/ChainOfCustody.php';
+require_once __DIR__ . '/../src/OAuthProvider.php';
 
 define('ALLOWED_EXTENSIONS', ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'cr2', 'cr3', 'nef']);
 define('MAX_FILE_SIZE', 100 * 1024 * 1024);
@@ -36,20 +37,20 @@ session_start();
 
 $action = $_GET['action'] ?? 'home';
 
-$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset'];
+$allowedActions = ['home', 'sign', 'check', 'lookup', 'update', 'download', 'login', 'register', 'logout', 'verify', 'feedback', 'gdpr', 'forgot', 'reset', 'oauth_login', 'oauth_callback'];
 if (!in_array($action, $allowedActions, true)) {
     $action = 'home';
 }
 
 // Public actions (no auth needed)
-$publicActions = ['home', 'check', 'lookup', 'feedback', 'gdpr', 'download', 'login', 'register', 'verify', 'forgot', 'reset'];
+$publicActions = ['home', 'check', 'lookup', 'feedback', 'gdpr', 'download', 'login', 'register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback'];
 
 // Session
 $userId   = (int) ($_SESSION['user_id'] ?? 0);
 $userName = $_SESSION['user_name'] ?? '';
 
 // Auth routes with their own UIs (not tabs)
-if (in_array($action, ['register', 'verify', 'forgot', 'reset'], true)) {
+if (in_array($action, ['register', 'verify', 'forgot', 'reset', 'oauth_login', 'oauth_callback'], true)) {
     handleAuthRoute($action);
     exit;
 }
@@ -109,6 +110,16 @@ renderPage('home', null, $userName);
 
 function handleAuthRoute(string $action): void
 {
+    if ($action === 'oauth_login') {
+        handleOAuthLogin();
+        return;
+    }
+
+    if ($action === 'oauth_callback') {
+        handleOAuthCallback();
+        return;
+    }
+
     if ($action === 'register') {
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             handleRegisterPost();
@@ -157,7 +168,21 @@ function handleLoginPost(): void
 
         $user = $store->findUserByEmail($email);
 
-        if ($user === null || !password_verify($password, $user['password_hash'])) {
+        if ($user === null) {
+            renderPage('login', errorMsg('Invalid email or password.'), '');
+            return;
+        }
+
+        // OAuth users must sign in through their provider
+        if (($user['auth_provider'] ?? 'local') !== 'local') {
+            renderPage('login', errorMsg(
+                'This account uses ' . htmlspecialchars($user['auth_provider'])
+                . ' login. Please sign in with ' . htmlspecialchars(ucfirst($user['auth_provider'])) . '.'
+            ), '');
+            return;
+        }
+
+        if (!password_verify($password, $user['password_hash'])) {
             renderPage('login', errorMsg('Invalid email or password.'), '');
             return;
         }
@@ -178,6 +203,110 @@ function handleLoginPost(): void
         exit;
     } catch (Throwable $e) {
         renderPage('login', errorMsg('An error occurred. Please try again.'), '');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth handlers
+// ---------------------------------------------------------------------------
+
+function getOAuthConfig(): array
+{
+    $config = loadConfig();
+    return $config['oauth'] ?? [];
+}
+
+function handleOAuthLogin(): void
+{
+    $provider = $_GET['provider'] ?? '';
+
+    if (!in_array($provider, ['google', 'github'], true)) {
+        renderPage('login', errorMsg('Unsupported OAuth provider.'), '');
+        return;
+    }
+
+    try {
+        $oauthCfg = getOAuthConfig();
+        $state    = bin2hex(random_bytes(16));
+
+        $_SESSION['oauth_state'] = $state;
+        $_SESSION['oauth_provider'] = $provider;
+
+        $url = OAuthProvider::getAuthorizationUrl($provider, $oauthCfg, $state);
+        header('Location: ' . $url);
+        exit;
+    } catch (Throwable $e) {
+        renderPage('login', errorMsg('OAuth configuration error: ' . htmlspecialchars($e->getMessage())), '');
+    }
+}
+
+function handleOAuthCallback(): void
+{
+    $provider  = $_GET['provider'] ?? '';
+    $code      = $_GET['code'] ?? '';
+    $state     = $_GET['state'] ?? '';
+    $error     = $_GET['error'] ?? '';
+
+    // Handle provider-side errors (user denied consent, etc.)
+    if ($error !== '') {
+        renderPage('login', errorMsg('OAuth login was cancelled or denied.'), '');
+        return;
+    }
+
+    // Validate state (CSRF)
+    $expectedState = $_SESSION['oauth_state'] ?? '';
+    $expectedProvider = $_SESSION['oauth_provider'] ?? '';
+
+    if ($state === '' || !hash_equals($expectedState, $state) || $provider !== $expectedProvider) {
+        renderPage('login', errorMsg('OAuth login failed: invalid state parameter.'), '');
+        return;
+    }
+
+    // Clear session state
+    unset($_SESSION['oauth_state']);
+    unset($_SESSION['oauth_provider']);
+
+    if ($code === '') {
+        renderPage('login', errorMsg('OAuth login failed: no authorization code received.'), '');
+        return;
+    }
+
+    try {
+        $oauthCfg = getOAuthConfig();
+        $accessToken = OAuthProvider::exchangeCode($provider, $code, $oauthCfg);
+        $userInfo    = OAuthProvider::getUserInfo($provider, $accessToken, $oauthCfg);
+
+        if (empty($userInfo['email'])) {
+            renderPage('login', errorMsg('Could not retrieve your email from the OAuth provider.'), '');
+            return;
+        }
+
+        $config = loadConfig();
+        $store  = new SignatureStore($config);
+
+        $userId = $store->findOrCreateOAuthUser(
+            $provider,
+            $userInfo['id'],
+            $userInfo['email'],
+            $userInfo['name'] ?: explode('@', $userInfo['email'])[0],
+        );
+
+        $user = $store->findUserById($userId);
+        if ($user === null) {
+            renderPage('login', errorMsg('Failed to create or retrieve user account.'), '');
+            return;
+        }
+
+        $_SESSION['user_id']   = $userId;
+        $_SESSION['user_name'] = $user['name'];
+
+        $redirect = trim($_POST['redirect'] ?? '');
+        $allowed  = ['sign', 'check', 'update', 'home'];
+        $target   = in_array($redirect, $allowed, true) ? $redirect : 'sign';
+        header('Location: ?action=' . $target);
+        exit;
+    } catch (Throwable $e) {
+        renderPage('login', errorMsg('OAuth login error: ' . htmlspecialchars($e->getMessage())), '');
     }
 }
 
@@ -689,9 +818,29 @@ function renderFeedbackFormContent(?string $error): void
 function renderLoginFormContent(?string $error): void
 {
     $redirect = $_GET['redirect'] ?? ($_POST['redirect'] ?? '');
+    $oauthCfg = [];
+    try {
+        $config   = loadConfig();
+        $oauthCfg = $config['oauth'] ?? [];
+    } catch (Throwable) {
+        // Config unavailable — show only the local form
+    }
+
     if ($error !== null):
         ?><div class="msg error"><?= htmlspecialchars($error) ?></div><?php
-    endif; ?>
+    endif;
+
+    // OAuth buttons
+    $hasOAuth = false;
+    foreach (['google', 'github'] as $prov) {
+        if (!empty($oauthCfg[$prov]['client_id'])) {
+            $hasOAuth = true;
+            $label = $prov === 'google' ? 'Google' : 'GitHub';
+            ?><a href="?action=oauth_login&provider=<?= $prov ?>" class="btn oauth-btn oauth-<?= $prov ?>">Sign in with <?= $label ?></a><?php
+        }
+    }
+    if ($hasOAuth): ?><p style="margin:14px 0 10px;text-align:center;font-size:13px;color:#999;">or sign in with email</p><?php endif; ?>
+
     <form method="post" action="?action=login">
         <input type="hidden" name="redirect" value="<?= htmlspecialchars($redirect) ?>">
         <div class="form-group">
@@ -1056,7 +1205,8 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
         $html .= '<strong>✅ Original file verified</strong><br>';
         $html .= 'File: ' . htmlspecialchars($originalName) . '<br>';
         $html .= 'Signed by: ' . htmlspecialchars($original['author_name'])
-               . ' (' . htmlspecialchars($original['email'] ?? '') . ')<br>';
+               . ' (' . htmlspecialchars($original['email'] ?? '') . ', '
+               . htmlspecialchars($original['auth_provider'] ?? 'local') . ')<br>';
         $html .= 'Signed at: ' . htmlspecialchars($original['created_at']) . '<br>';
         $html .= 'Original hash: <code>' . htmlspecialchars($original['signature_hash']) . '</code>';
         $html .= '</div>';
@@ -1108,7 +1258,8 @@ function handleCheckAction(
         $html .= 'The file ' . htmlspecialchars($originalName) . ' has not been tampered with.<br><br>';
         $html .= 'Hash: <code>' . htmlspecialchars($result['hash'] ?? '') . '</code><br>';
         $html .= 'Signed by: ' . htmlspecialchars($result['signature']['author_name'])
-               . ' (' . htmlspecialchars($result['signature']['email'] ?? '') . ')<br>';
+               . ' (' . htmlspecialchars($result['signature']['email'] ?? '') . ', '
+               . htmlspecialchars($result['signature']['auth_provider'] ?? 'local') . ')<br>';
         $html .= 'Signed at: ' . htmlspecialchars($result['signature']['created_at']);
         $html .= '</div>';
     } elseif ($result['hash_valid']) {
@@ -1144,8 +1295,9 @@ function handleCheckAction(
             $label = $i === 0 ? 'Current' : (string) ($i + 1);
             $html .= '<tr>';
             $html .= '<td>' . htmlspecialchars($label) . '</td>';
+            $authProvider = $link['auth_provider'] ?? 'local';
             $html .= '<td>' . htmlspecialchars($link['author_name'])
-                   . ' (' . htmlspecialchars($link['email'] ?? '') . ')</td>';
+                   . ' (' . htmlspecialchars($link['email'] ?? '') . ', ' . htmlspecialchars($authProvider) . ')</td>';
             $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
             $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
             $html .= '</tr>';
@@ -1216,7 +1368,8 @@ function handleLookupAction(): void
             $html .= '<strong>✅ Signature Found</strong><br>';
             $html .= 'File: ' . htmlspecialchars($originalName) . '<br>';
             $html .= 'Signed by: ' . htmlspecialchars($record['author_name'])
-                   . ' (' . htmlspecialchars($record['email'] ?? '') . ')<br>';
+                   . ' (' . htmlspecialchars($record['email'] ?? '') . ', '
+                   . htmlspecialchars($record['auth_provider'] ?? 'local') . ')<br>';
             $html .= 'File name at signing: ' . htmlspecialchars($record['file_name']) . '<br>';
             $html .= 'Signed at: ' . htmlspecialchars($record['created_at']) . '<br>';
             $html .= 'Hash: <code>' . htmlspecialchars($result['hash']) . '</code>';
@@ -1232,8 +1385,9 @@ function handleLookupAction(): void
                     $label = $i === 0 ? 'Current' : (string) ($i + 1);
                     $html .= '<tr>';
                     $html .= '<td>' . htmlspecialchars($label) . '</td>';
+                    $authProvider = $link['auth_provider'] ?? 'local';
                     $html .= '<td>' . htmlspecialchars($link['author_name'])
-                           . ' (' . htmlspecialchars($link['email'] ?? '') . ')</td>';
+                           . ' (' . htmlspecialchars($link['email'] ?? '') . ', ' . htmlspecialchars($authProvider) . ')</td>';
                     $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
                     $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
                     $html .= '</tr>';
@@ -1510,6 +1664,13 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
 .blurb p { font-size: 14px; color: #555; margin-bottom: 10px; line-height: 1.7; }
 .blurb ul { margin: 10px 0 0 20px; font-size: 14px; color: #555; line-height: 1.8; }
 .blurb ul li strong { color: #333; }
+
+/* OAuth buttons */
+.oauth-btn { margin-bottom: 8px; text-align: center; }
+.oauth-google { background: #fff; color: #333 !important; border: 1px solid #d1d5db; font-weight: 500; }
+.oauth-google:hover { background: #f3f4f6; }
+.oauth-github { background: #24292f; color: #fff !important; font-weight: 500; }
+.oauth-github:hover { background: #1b1f23; }
 
 /* Footer */
 .footer { text-align: center; margin-top: 28px; font-size: 12px; color: #999; }

@@ -13,9 +13,12 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified            TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 once the user verifies their email',
     verification_token        VARCHAR(64)     DEFAULT NULL COMMENT 'Random token for email verification',
     verification_token_expires DATETIME       DEFAULT NULL COMMENT 'Expiry time for the verification token',
+    auth_provider             VARCHAR(32)     NOT NULL DEFAULT 'local' COMMENT 'Authentication method: local, google, github, ...',
+    provider_id               VARCHAR(255)    DEFAULT NULL COMMENT 'Unique ID from the OAuth provider',
     created_at                TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE INDEX idx_users_email (email)
+    UNIQUE INDEX idx_users_email (email),
+    INDEX idx_provider (auth_provider, provider_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Registered users who can create and verify signatures';
 
