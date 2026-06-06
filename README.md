@@ -271,7 +271,7 @@ on `ImageSignatureHandler` and registering the handler in the constructor.
 
 ## License
 
-[Specify your license here.]
+GNU General Public License v3.0 or later.
 
 ---
 

@@ -375,3 +375,7 @@ case-insensitively. A new question is picked after each attempt.
   CoC metadata (exclusive) will cause verification to fail.
 - **Authentication:** `authenticated=true` requires both a valid hash AND a
   matching database record.
+
+## License
+
+GNU General Public License v3.0 or later.
