@@ -75,6 +75,122 @@ php -S localhost:8000 -t www/
 
 Open http://localhost:8000 in a browser.
 
+### Production Deployment — Apache
+
+**Web interface** (`/etc/apache2/sites-enabled/photo-verify.org.conf`):
+
+```apache
+<VirtualHost *:443>
+    ServerName photo-verify.org
+    DocumentRoot /var/www/photo-verify.org/www
+
+    RewriteEngine On
+    # Pass Authorization header for API calls from the website
+    RewriteCond %{HTTP:Authorization} ^(.+)$
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+    ErrorLog ${APACHE_LOG_DIR}/photo-verify.org-error.log
+    CustomLog ${APACHE_LOG_DIR}/photo-verify.org-access.log combined
+
+    SSLCertificateFile /etc/letsencrypt/live/photo-verify.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/photo-verify.org/privkey.pem
+    Include /etc/letsencrypt/options-ssl-apache.conf
+</VirtualHost>
+```
+
+**API** (`/etc/apache2/sites-enabled/api.photo-verify.org.conf`):
+
+```apache
+<VirtualHost *:443>
+    ServerName api.photo-verify.org
+    DocumentRoot /var/www/photo-verify.org/api
+
+    # Pass Authorization header through to PHP
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} ^(.+)$
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^(.*)$ index.php [QSA,L]
+
+    # Node metadata (static fallback — served before the rewrite rules)
+    <Location "/.well-known/chain-of-custody">
+        ForceType application/json
+    </Location>
+
+    ErrorLog ${APACHE_LOG_DIR}/api.photo-verify.org-error.log
+    CustomLog ${APACHE_LOG_DIR}/api.photo-verify.org-access.log combined
+
+    SSLCertificateFile /etc/letsencrypt/live/api.photo-verify.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/api.photo-verify.org/privkey.pem
+    Include /etc/letsencrypt/options-ssl-apache.conf
+</VirtualHost>
+```
+
+### Production Deployment — Nginx
+
+**Web interface** (`/etc/nginx/sites-enabled/photo-verify.org`):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name photo-verify.org;
+
+    root /var/www/photo-verify.org/www;
+    index index.php;
+
+    ssl_certificate     /etc/letsencrypt/live/photo-verify.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/photo-verify.org/privkey.pem;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_param PHP_VALUE "upload_max_filesize=200M
+                                  post_max_size=200M
+                                  max_execution_time=300";
+    }
+}
+```
+
+**API** (`/etc/nginx/sites-enabled/api.photo-verify.org`):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name api.photo-verify.org;
+
+    root /var/www/photo-verify.org/api;
+    index index.php;
+
+    ssl_certificate     /etc/letsencrypt/live/api.photo-verify.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.photo-verify.org/privkey.pem;
+
+    # Node metadata — static file or pass to PHP
+    location = /.well-known/chain-of-custody {
+        try_files $uri /index.php?$query_string;
+    }
+
+    location / {
+        try_files $uri /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_param PHP_VALUE "upload_max_filesize=200M
+                                  post_max_size=200M
+                                  max_execution_time=300";
+        # Pass Authorization header to PHP
+        fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+    }
+}
+```
+
 ## Library API
 
 ```php

@@ -1187,6 +1187,25 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
         return;
     }
 
+    // --- Check if the original is from a remote node -------------------------
+    $origCheck = $coc->checkSignature($originalTmp);
+    if (!empty($origCheck['requires_remote'])) {
+        $remoteNodeId = $origCheck['node_id'];
+        $html = '<div class="msg info">';
+        $html .= '<strong>🔗 Original file signed by a different node</strong><br>';
+        $html .= 'The original file was signed by node <code>' . htmlspecialchars($remoteNodeId) . '</code>. ';
+        $html .= 'The update must be performed on that node. ';
+        $html .= 'To update manually:<br>';
+        $html .= '<code style="font-size:12px;">curl -X POST https://' . htmlspecialchars($remoteNodeId) . '.photo-verify.org/update \</code><br>';
+        $html .= '<code style="font-size:12px;">  -H "Authorization: Bearer &lt;api-key&gt;" \</code><br>';
+        $html .= '<code style="font-size:12px;">  -F "original=@signed-file" -F "modified=@modified-file"</code>';
+        $html .= '</div>';
+        @unlink($originalTmp);
+        @unlink($modifiedTmp);
+        renderPage($action, $html, $userName);
+        return;
+    }
+
     // --- Process ------------------------------------------------------------
     try {
         $result = $coc->updateChainOfCustody($originalTmp, $modifiedTmp, $userId);

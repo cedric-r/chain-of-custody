@@ -396,6 +396,55 @@ class ChainOfCustody
     // ------------------------------------------------------------------
 
     /**
+     * Verify a file signed by a remote node using that node's published salt.
+     *
+     * This allows offline verification when a remote node publishes its
+     * `hash_salt` via `/.well-known/chain-of-custody`. The file's embedded
+     * hash is compared against `SHA-256(innerHash || remoteSalt)` instead
+     * of this node's own salt.
+     *
+     * @param  string  $filePath   Path to the signed file.
+     * @param  string  $remoteSalt The remote node's hash_salt (empty = no salt).
+     * @return array{
+     *     hash_valid: bool|null,
+     *     hash: string|null,
+     *     node_id: string,
+     * }
+     */
+    public function verifyWithRemoteSalt(string $filePath, string $remoteSalt): array
+    {
+        $data = $this->readFile($filePath);
+
+        $handler  = $this->detectHandler($data);
+        $existing = $handler->find($data);
+
+        if ($existing === null) {
+            return [
+                'hash_valid' => null,
+                'hash'       => null,
+                'node_id'    => '',
+            ];
+        }
+
+        $storedPayload = $existing['hash'];
+        $parsed        = $this->parseSignaturePayload($storedPayload);
+        $storedHash    = rtrim($parsed['hashData'], "\0");
+        $nodeId        = $parsed['nodeId'];
+
+        $computedInner = $handler->computeOriginalHash($data, $existing);
+        $computed      = $remoteSalt !== ''
+            ? hash('sha256', $computedInner . $remoteSalt)
+            : $computedInner;
+        $hashValid     = hash_equals($storedHash, $computed);
+
+        return [
+            'hash_valid' => $hashValid,
+            'hash'       => $storedHash,
+            'node_id'    => $nodeId,
+        ];
+    }
+
+    /**
      * Core signing logic — shared by createSignature and createSignedFile.
      *
      * @return array{data: string, hash: string}

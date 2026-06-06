@@ -219,7 +219,26 @@ function handleForward(): void
 // Bootstrap
 // ---------------------------------------------------------------------------
 
-// Only POST is accepted
+// Public metadata endpoint (GET only, no auth)
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+    if ($path === '/.well-known/chain-of-custody') {
+        $config = require CONFIG_PATH;
+        $nodeId = $config['node_id'] ?? '';
+        header('Content-Type: application/json');
+        echo json_encode([
+            'node_id'          => $nodeId,
+            'algorithm'        => 'SHA-256',
+            'verification_url' => $nodeId !== ''
+                ? "https://{$nodeId}.photo-verify.org/verify"
+                : null,
+        ], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+    jsonError(404, 'Not found.');
+}
+
+// Only POST is accepted for API endpoints
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     jsonError(405, 'Method not allowed. Use POST.');
 }
