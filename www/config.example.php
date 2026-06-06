@@ -6,6 +6,7 @@ declare(strict_types=1);
  * Chain of Custody — Website Database, SMTP and OAuth Configuration
  */
 return [
+    'node_id'   => '',
     'hash_salt' => '',
     'host'     => '127.0.0.1',
     'port'     => 3306,
@@ -23,7 +24,6 @@ return [
         'feedback_recipient' => '',
     ],
 
-    // OAuth provider credentials (optional — omit for local-only auth)
     'oauth' => [
         'google' => [
             'client_id'     => '',
