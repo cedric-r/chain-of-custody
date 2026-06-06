@@ -23,6 +23,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/ImageSignatureHandler.php';
 require_once __DIR__ . '/../src/SignatureStore.php';
 require_once __DIR__ . '/../src/ChainOfCustody.php';
+require_once __DIR__ . '/../src/NodeResolver.php';
 
 // Paths
 const ORIGINAL_TIF = __DIR__ . '/../demo/image.tif';
@@ -1624,6 +1625,170 @@ if (! $dbAvailable) {
                 unlink($path);
             }
         }
+    });
+
+    // ---- Remote verification ------------------------------------------------
+
+    echo "\n── Remote verification\n";
+
+    test('checkSignature reports requires_remote=false for local node', function () use ($coc, $aliceId) {
+        $path = copyTif();
+        try {
+            $coc->createSignature($path, $aliceId);
+            $result = $coc->checkSignature($path);
+            assertTrue($result['authenticated'], 'Should be authenticated');
+            // The test config has no node_id, so node_id should be empty
+            assertEquals('', $result['node_id'] ?? '', 'node_id should be empty');
+            assertFalse($result['requires_remote'] ?? true, 'requires_remote should be false');
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    test('checkSignature detects remote node when node_id differs', function () use ($aliceId) {
+        $path = copyTif();
+
+        // Build a config with a specific node_id
+        $configPath = __DIR__ . '/_node_a_config.php';
+        file_put_contents($configPath, '<?php return [
+            "node_id" => "a1b2c3d4e5f67890",
+            "host" => "127.0.0.1",
+            "port" => 3306,
+            "dbname" => "chain_of_custody_test",
+            "username" => "coc_test",
+            "password" => "coc_test_pass",
+            "charset" => "utf8mb4",
+        ];');
+
+        try {
+            $nodeA = new ChainOfCustody($configPath);
+            $nodeA->createSignature($path, $aliceId);
+
+            // Verify locally on node A
+            $localResult = $nodeA->checkSignature($path);
+            assertTrue($localResult['authenticated'], 'Node A should verify its own signature');
+            assertEquals('a1b2c3d4e5f67890', $localResult['node_id'] ?? '');
+            assertFalse($localResult['requires_remote'] ?? true, 'Local node should not be remote');
+
+            // Verify from node B (different config, default empty node_id)
+            $nodeB = new ChainOfCustody(__DIR__ . '/config.php');
+            $remoteResult = $nodeB->checkSignature($path);
+            assertTrue($remoteResult['hash_valid'], 'File should be untampered');
+            assertEquals('a1b2c3d4e5f67890', $remoteResult['node_id'] ?? '');
+            assertTrue($remoteResult['requires_remote'] ?? false, 'requires_remote should be true for different node');
+        } finally {
+            @unlink($configPath);
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    test('lookupSignature works for file signed with node_id', function () use ($aliceId) {
+        $path = copyTif();
+        $configPath = __DIR__ . '/_node_config.php';
+        file_put_contents($configPath, '<?php return [
+            "node_id" => "a1b2c3d4e5f67890",
+            "host" => "127.0.0.1",
+            "port" => 3306,
+            "dbname" => "chain_of_custody_test",
+            "username" => "coc_test",
+            "password" => "coc_test_pass",
+            "charset" => "utf8mb4",
+        ];');
+
+        try {
+            $node = new ChainOfCustody($configPath);
+            $node->createSignature($path, $aliceId);
+
+            // Lookup the unsigned original
+            $origPath = copyTif();
+            try {
+                $result = $node->lookupSignature($origPath);
+                assertTrue($result['found'], 'Should find the signature record');
+            } finally {
+                if (is_file($origPath)) {
+                    unlink($origPath);
+                }
+            }
+        } finally {
+            @unlink($configPath);
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+
+    test('updateChainOfCustody works with node_id', function () use ($aliceId) {
+        $configPath = __DIR__ . '/_node_u_config.php';
+        file_put_contents($configPath, '<?php return [
+            "node_id" => "a1b2c3d4e5f67890",
+            "host" => "127.0.0.1",
+            "port" => 3306,
+            "dbname" => "chain_of_custody_test",
+            "username" => "coc_test",
+            "password" => "coc_test_pass",
+            "charset" => "utf8mb4",
+        ];');
+
+        $origPath = copyTif();
+        $modPath  = copyModifiedTif();
+        try {
+            $coc = new ChainOfCustody($configPath);
+            $coc->createSignature($origPath, $aliceId);
+
+            $result = $coc->updateChainOfCustody($origPath, $modPath, $aliceId);
+            assertIsString($result['data'], 'Should return signed binary data');
+
+            // The signed modified file should contain the node_id
+            $tmp = __DIR__ . '/test_u_signed.tif';
+            file_put_contents($tmp, $result['data']);
+            try {
+                $check = $coc->checkSignature($tmp);
+                assertTrue($check['authenticated'], 'Signed modified file should verify');
+                assertEquals('a1b2c3d4e5f67890', $check['node_id'] ?? '');
+            } finally {
+                if (is_file($tmp)) {
+                    unlink($tmp);
+                }
+            }
+        } finally {
+            @unlink($configPath);
+            if (is_file($origPath)) {
+                unlink($origPath);
+            }
+            if (is_file($modPath)) {
+                unlink($modPath);
+            }
+        }
+    });
+
+    test('parseSignaturePayload handles legacy format without node_id', function () {
+        $coc = new ChainOfCustody(__DIR__ . '/config.php');
+        $refl = new ReflectionClass(ChainOfCustody::class);
+        $method = $refl->getMethod('parseSignaturePayload');
+        $method->setAccessible(true);
+
+        // Legacy: 64-char hex hash (no node_id prefix)
+        $hash = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+        $parsed = $method->invoke($coc, $hash);
+        assertEquals('', $parsed['nodeId'], 'Legacy format should have empty nodeId');
+        assertEquals($hash, $parsed['hashData'], 'Legacy hashData should be the full payload');
+    });
+
+    test('parseSignaturePayload handles node_id format', function () {
+        $coc = new ChainOfCustody(__DIR__ . '/config.php');
+        $refl = new ReflectionClass(ChainOfCustody::class);
+        $method = $refl->getMethod('parseSignaturePayload');
+        $method->setAccessible(true);
+
+        // Node_id format: [1 byte len] [node_id] [:] [hash]
+        $payload = "\x10" . 'a1b2c3d4e5f67890' . ':' . 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+        $parsed = $method->invoke($coc, $payload);
+        assertEquals('a1b2c3d4e5f67890', $parsed['nodeId'], 'Should extract node_id');
+        assertEquals('abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789', $parsed['hashData'], 'Should extract hash');
     });
 
     // ---- Edge cases ---------------------------------------------------------

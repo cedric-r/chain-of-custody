@@ -200,7 +200,7 @@ function handleForward(): void
         }
 
         // Forward to the owning node
-        $remoteResult = NodeResolver::forward($nodeId, $upload['path']);
+        $remoteResult = NodeResolver::forward($nodeId, $upload['path'], $upload['name']);
 
         jsonResponse([
             'status'    => 'ok',
@@ -226,22 +226,35 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // Parse the route
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-$allowedRoutes = ['/sign', '/check', '/lookup', '/update', '/forward'];
+$allowedRoutes = ['/sign', '/check', '/lookup', '/update', '/forward', '/verify'];
 
 if (!in_array($path, $allowedRoutes, true)) {
-    jsonError(404, 'Not found. Available endpoints: /sign, /check, /lookup, /update');
+    jsonError(404, 'Not found. Available endpoints: /sign, /check, /lookup, /update, /verify');
 }
 
-// Authenticate via API key
-$authHeader = $_SERVER['HTTP_AUTHORIZATION']
-    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
-    ?? '';
+// Public endpoints (no API key required)
+$publicRoutes = ['/verify'];
 
-if (!preg_match('/^Bearer\s+(coc_.+)$/i', $authHeader, $matches)) {
-    jsonError(401, 'Missing or invalid Authorization header. Expected: Bearer coc_<key>');
+// Authenticate via API key (skip for public routes)
+if (!in_array($path, $publicRoutes, true)) {
+    $authHeader = $_SERVER['HTTP_AUTHORIZATION']
+        ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+        ?? '';
+
+    if (!preg_match('/^Bearer\s+(coc_.+)$/i', $authHeader, $matches)) {
+        jsonError(401, 'Missing or invalid Authorization header. Expected: Bearer coc_<key>');
+    }
 }
 
-$apiKey = $matches[1];
+// Public route — no auth needed
+if ($path === '/verify') {
+    $coc = new ChainOfCustody(CONFIG_PATH);
+    handleCheck($coc);
+    exit;
+}
+
+// Protected routes — require API key
+$apiKey = $matches[1] ?? '';
 
 try {
     $config   = require CONFIG_PATH;
@@ -249,10 +262,8 @@ try {
     $keyData  = $keyStore->authenticate($apiKey);
     $userId   = (int) $keyData['user_id'];
 
-    // Update last used timestamp (fire and forget)
     $keyStore->touch((int) $keyData['id']);
 
-    // Build ChainOfCustody and route
     $coc = new ChainOfCustody(CONFIG_PATH);
 
     match ($path) {

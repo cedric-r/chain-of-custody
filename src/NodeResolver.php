@@ -83,13 +83,17 @@ class NodeResolver
      *
      * @throws RuntimeException  When the remote node cannot be reached.
      */
-    public static function forward(string $nodeId, string $filePath): array
+    public static function forward(string $nodeId, string $filePath, string $originalName = ''): array
     {
         $url = self::resolve($nodeId);
 
-        // Build a multipart request
-        $boundary = '------------------------' . bin2hex(random_bytes(8));
-        $filename = basename($filePath);
+        if (!is_file($filePath)) {
+            throw new RuntimeException("File not found: {$filePath}");
+        }
+
+        // Use file_get_contents with ignore_errors to handle non-200 responses
+        $boundary = '----FormBoundary' . bin2hex(random_bytes(12));
+        $filename = $originalName !== '' ? $originalName : basename($filePath);
         $fileData = file_get_contents($filePath);
 
         if ($fileData === false) {
@@ -104,24 +108,37 @@ class NodeResolver
 
         $context = stream_context_create([
             'http' => [
-                'method'  => 'POST',
-                'header'  => "Content-Type: multipart/form-data; boundary={$boundary}\r\n"
-                           . "Content-Length: " . strlen($body) . "\r\n",
-                'content' => $body,
-                'timeout' => 30,
+                'method'       => 'POST',
+                'header'       => "Content-Type: multipart/form-data; boundary={$boundary}\r\n"
+                                . "Content-Length: " . strlen($body) . "\r\n",
+                'content'      => $body,
+                'timeout'      => 60,
+                'ignore_errors' => true,
+            ],
+            'ssl' => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false,
             ],
         ]);
 
         $response = @file_get_contents($url, false, $context);
 
-        if ($response === false) {
-            throw new RuntimeException("Failed to reach remote node at {$url}.");
+        if ($response === false || $response === '') {
+            throw new RuntimeException("No response from remote node at {$url}.");
         }
 
         $data = json_decode($response, true);
 
         if (!is_array($data)) {
-            throw new RuntimeException("Invalid response from remote node at {$url}.");
+            throw new RuntimeException(
+                "Invalid JSON response from remote node at {$url}."
+            );
+        }
+
+        if (!empty($data['status']) && $data['status'] === 'error') {
+            throw new RuntimeException(
+                "Remote node error: " . ($data['message'] ?? 'unknown')
+            );
         }
 
         return $data;

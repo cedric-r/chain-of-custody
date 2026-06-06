@@ -15,6 +15,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/ChainOfCustody.php';
 require_once __DIR__ . '/../src/OAuthProvider.php';
 require_once __DIR__ . '/../src/ApiKeyStore.php';
+require_once __DIR__ . '/../src/NodeResolver.php';
 
 define('ALLOWED_EXTENSIONS', ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'cr2', 'cr3', 'nef']);
 define('MAX_FILE_SIZE', 100 * 1024 * 1024);
@@ -1255,9 +1256,83 @@ function handleCheckAction(
     $result   = $coc->checkSignature($tmpPath);
     $chainResult = $coc->checkChainOfCustody($tmpPath);
 
-    $html = '';
+    $html        = '';
+    $isRemote    = !empty($result['requires_remote']);
 
-    if ($result['authenticated']) {
+    if ($isRemote) {
+        $nodeId = $result['node_id'];
+        try {
+            $remoteResult = NodeResolver::forward($nodeId, $tmpPath, $originalName);
+            $remoteData = $remoteResult['result'] ?? $remoteResult;
+
+            // Show the remote node info on every remote verification result
+            $html .= '<div class="msg info"><strong>🔗 Forwarded to remote node</strong> — <code>' . htmlspecialchars($nodeId) . '</code></div>';
+
+            if (!empty($remoteData['authenticated'])) {
+                $sig = $remoteData['signature'] ?? [];
+                $html .= '<div class="msg success">';
+                $html .= '<strong>✅ Signature Valid</strong><br>';
+                $html .= 'The file ' . htmlspecialchars($originalName) . ' has not been tampered with.<br><br>';
+                $html .= 'Hash: <code>' . htmlspecialchars($remoteData['hash'] ?? '') . '</code><br>';
+                if (!empty($sig)) {
+                    $html .= 'Signed by: ' . htmlspecialchars($sig['author_name'])
+                           . ' (' . htmlspecialchars($sig['email'] ?? '') . ', '
+                           . htmlspecialchars($sig['auth_provider'] ?? 'local') . ')<br>';
+                    $html .= 'Signed at: ' . htmlspecialchars($sig['created_at']);
+                }
+                $html .= '</div>';
+
+                // Remote chain of custody
+                $remoteChain = $remoteData['chain'] ?? [];
+                if (!empty($remoteChain)) {
+                    $html .= '<h3>Chain of Custody</h3>';
+                    $html .= '<table class="chain-table">';
+                    $html .= '<thead><tr><th>#</th><th>Author</th><th>Date / Time</th><th>Signature Hash</th></tr></thead>';
+                    $html .= '<tbody>';
+                    foreach ($remoteChain as $i => $link) {
+                        $label = $i === 0 ? 'Current' : (string) ($i + 1);
+                        $html .= '<tr>';
+                        $html .= '<td>' . htmlspecialchars($label) . '</td>';
+                        $html .= '<td>' . htmlspecialchars($link['author_name'])
+                               . ' (' . htmlspecialchars($link['email'] ?? '') . ', '
+                               . htmlspecialchars($link['auth_provider'] ?? 'local') . ')</td>';
+                        $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
+                        $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
+                        $html .= '</tr>';
+                    }
+                    $html .= '</tbody></table>';
+                }
+            } else {
+                $html .= '<div class="msg error">';
+                $html .= '<strong>❌ Signature Invalid</strong> (remote node reports)<br>';
+                if (!empty($remoteData['hash_valid'])) {
+                    $html .= 'The file content is authentic but no matching DB record was found on the remote node.';
+                } elseif (!empty($remoteData['hash'])) {
+                    $html .= 'The file has been tampered with (hash mismatch on the remote node).<br>';
+                    $html .= 'Hash: <code>' . htmlspecialchars($remoteData['hash']) . '</code>';
+                } else {
+                    $html .= 'The remote node could not find a signature in the forwarded file.<br>';
+                    $html .= 'This may indicate a file transfer issue.';
+                }
+                $html .= '</div>';
+            }
+        } catch (RuntimeException $e) {
+            // Remote node unreachable — show manual instructions with error
+            $resolvedUrl = "https://{$nodeId}.photo-verify.org/verify";
+            try {
+                $resolvedUrl = NodeResolver::resolve($nodeId);
+            } catch (RuntimeException) {
+            }
+            $html .= '<div class="msg info">';
+            $html .= '<strong>🔗 Signed by a different node</strong><br>';
+            $html .= 'This file was signed by node <code>' . htmlspecialchars($nodeId) . '</code>. ';
+            $html .= 'The remote node could not be reached:<br>';
+            $html .= '<code style="font-size:12px;">' . htmlspecialchars($e->getMessage()) . '</code><br><br>';
+            $html .= 'To verify manually:<br>';
+            $html .= '<code style="font-size:12px;">curl -X POST ' . htmlspecialchars($resolvedUrl) . ' -F "file=@..."</code>';
+            $html .= '</div>';
+        }
+    } elseif ($result['authenticated']) {
         $html .= '<div class="msg success">';
         $html .= '<strong>✅ Signature Valid</strong><br>';
         $html .= 'The file ' . htmlspecialchars($originalName) . ' has not been tampered with.<br><br>';
@@ -1293,20 +1368,11 @@ function handleCheckAction(
         $html .= '</div>';
     }
 
-    // Remote node notice
-    if (!empty($result['node_id']) && !empty($result['requires_remote'])) {
-        $html .= '<div class="msg info">';
-        $html .= '<strong>🔗 Signed by a different node</strong><br>';
-        $html .= 'This file was signed by node <code>' . htmlspecialchars($result['node_id']) . '</code>. ';
-        $html .= 'To verify it, use the API:<br>';
-        $html .= '<code style="font-size:12px;">curl -X POST https://' . htmlspecialchars($result['node_id']) . '.photo-verify.org/verify -F "file=@..."</code>';
-        $html .= '</div>';
-    }
+    // Chain of custody table (skip for remote files — shown from remote data above)
+    if (!$isRemote) {
+        $html .= '<h3>Chain of Custody</h3>';
 
-    // Chain of custody table
-    $html .= '<h3>Chain of Custody</h3>';
-
-    if ($chainResult['authenticated'] && !empty($chainResult['chain'])) {
+        if ($chainResult['authenticated'] && !empty($chainResult['chain'])) {
         $html .= '<table class="chain-table">';
         $html .= '<thead><tr><th>#</th><th>Author</th><th>Date / Time</th><th>Signature Hash</th></tr></thead>';
         $html .= '<tbody>';
@@ -1324,8 +1390,9 @@ function handleCheckAction(
         }
 
         $html .= '</tbody></table>';
-    } else {
-        $html .= '<p class="no-data">No chain of custody records in the database.</p>';
+        } else {
+            $html .= '<p class="no-data">No chain of custody records in the database.</p>';
+        }
     }
 
     renderPage($action, $html, $userName);
@@ -1875,7 +1942,7 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
                 <ul>
                     <li><strong>Sign</strong> — embed a signature into a file (requires login)</li>
                     <li><strong>Check</strong> — verify an existing signature and view its chain of custody</li>
-                    <li><strong>Lookup</strong> — upload any unsigned file; the system computes its hash and searches the database for a matching signature record</li>
+                    <li><strong>Lookup</strong> — upload any unsigned file; the system computes its hash and searches the local database for a matching signature record (local only, does not forward)</li>
                     <li><strong>Update</strong> — sign a modified file while keeping the link to the original signature</li>
                 </ul>
             </div>
@@ -1892,9 +1959,11 @@ h3 { font-size: 16px; margin: 24px 0 12px; color: #333; }
             <div class="blurb">
                 <h2>Look Up a File</h2>
                 <p>
-                    Upload any image or raw file to search the database for a matching
-                    signature record. The system computes the file's hash and checks
-                    whether that hash exists in the chain of custody database.
+                    Upload any image or raw file to search the local database for a
+                    matching signature record. The system computes the file's hash
+                    and checks whether that hash exists in the local chain of custody
+                    database. This lookup searches your node only — it does not
+                    forward the request to other nodes.
                 </p>
             </div>
             <form method="post" action="?action=lookup" enctype="multipart/form-data">
