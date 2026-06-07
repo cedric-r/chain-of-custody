@@ -271,13 +271,19 @@ class ChainOfCustody
         $result = $this->checkSignature($filePath);
 
         if (! $result['authenticated'] || $result['signature'] === null) {
+            // Still try to get node_id for remote files
             return [
                 'authenticated' => false,
                 'chain'         => [],
+                'node_id'       => $result['node_id'] ?? '',
             ];
         }
 
         $chain = $this->store->getChain((int) $result['signature']['id']);
+
+        // Recursively resolve cross-node chain links
+        $startHash = $result['signature']['signature_hash'] ?? '';
+        $chain = $this->resolveRemoteChainLinks($chain, $startHash ? [$startHash] : []);
 
         return [
             'authenticated' => true,
@@ -355,19 +361,33 @@ class ChainOfCustody
         string $modifiedPath,
         int $userId
     ): array {
-        // 1. Verify the original signed file
+        // 1. Check the original signed file
         $checkResult = $this->checkSignature($originalSignedPath);
 
-        if (! $checkResult['authenticated']) {
+        // Extract the full payload (with node_id) from the original file
+        $origData    = $this->readFile($originalSignedPath);
+        $origHandler = $this->detectHandler($origData);
+        $origExisting = $origHandler->find($origData);
+        $origPayload  = $origExisting ? $origExisting['hash'] : '';
+
+        $originalHash    = null;
+        $originalRecord  = null;
+
+        if (!empty($checkResult['requires_remote'])) {
+            // Remote file — use the extracted payload (with node_id) for chain linking
+            $originalHash  = $checkResult['hash'];
+            $origPayload   = $origPayload ?: '';
+        } elseif ($checkResult['authenticated']) {
+            $originalRecord = $checkResult['signature'];
+            if ($originalRecord === null) {
+                throw new ChainOfCustodyException(
+                    'Cannot update: no database record found for the original signature.'
+                );
+            }
+            $originalHash = $originalRecord['signature_hash'];
+        } else {
             throw new ChainOfCustodyException(
                 'Cannot update: the original signed file is not authentic or has no valid signature.'
-            );
-        }
-
-        $originalRecord = $checkResult['signature'];
-        if ($originalRecord === null) {
-            throw new ChainOfCustodyException(
-                'Cannot update: no database record found for the original signature.'
             );
         }
 
@@ -381,8 +401,12 @@ class ChainOfCustody
         $unsignedInfo = $handler->getUnsignedInfo($data);
         $signedData  = $handler->signUnsigned($data, $payload, $unsignedInfo);
 
-        // 4. Store with previous_id linking to the original record
-        $this->store->store($saltedHash, $userId, basename($modifiedPath), (int) $originalRecord['id']);
+        // 4. Store with previous_id and previous_hash linking to the original record
+        $prevId   = $originalRecord !== null ? (int) $originalRecord['id'] : null;
+        // Use the full payload (with node_id) as previous_hash
+        $prevHash = $origPayload ?: ($originalHash ?? '');
+
+        $this->store->store($saltedHash, $userId, basename($modifiedPath), $prevId, $prevHash);
 
         return [
             'data'     => $signedData,
@@ -445,6 +469,71 @@ class ChainOfCustody
     }
 
     /**
+     * Fully resolve a chain from a given hash, including cross-node links.
+     *
+     * Called by the /chain API endpoint to return a completely resolved chain
+     * segment. This prevents recursive loops between nodes.
+     */
+    public function resolveFullChain(string $hash): array
+    {
+        // Use findEarliestByHash to get the original record, not the latest re-sign
+        $record = $this->store->findEarliestByHash($hash);
+        if ($record === null) {
+            return [];
+        }
+
+        $chain = $this->store->getChain((int) $record['id']);
+        return $this->resolveRemoteChainLinks($chain, [$hash]);
+    }
+
+    /**
+     * Recursively resolve cross-node chain links.
+     *
+     * When the local chain ends with an unresolved entry containing a node_id,
+     * forward to that node's /chain endpoint to get the next segment.
+     * The $visited parameter tracks already-resolved hashes to prevent loops.
+     */
+    private function resolveRemoteChainLinks(array $chain, array $visited = []): array
+    {
+        $lastIdx = count($chain) - 1;
+        if ($lastIdx < 0) {
+            return $chain;
+        }
+
+        $last = $chain[$lastIdx];
+        if (empty($last['unresolved']) || empty($last['node_id'])) {
+            return $chain;
+        }
+
+        $nodeId   = $last['node_id'];
+        $hash     = $last['signature_hash'];
+
+        // Guard against infinite loops
+        if (in_array($hash, $visited, true)) {
+            return $chain;
+        }
+        $visited[] = $hash;
+
+        // Forward to the remote node's /chain endpoint
+        require_once __DIR__ . '/NodeResolver.php';
+        try {
+            $remoteResult = NodeResolver::chainLookup($nodeId, $hash);
+            if (!empty($remoteResult['chain'])) {
+                array_pop($chain); // remove the unresolved entry
+                foreach ($remoteResult['chain'] as $entry) {
+                    $chain[] = $entry;
+                }
+                // Recurse — the remote chain may itself have unresolved links
+                return $this->resolveRemoteChainLinks($chain, $visited);
+            }
+        } catch (\RuntimeException) {
+            // Remote node unreachable — keep the unresolved entry
+        }
+
+        return $chain;
+    }
+
+    /**
      * Core signing logic — shared by createSignature and createSignedFile.
      *
      * @return array{data: string, hash: string}
@@ -453,13 +542,17 @@ class ChainOfCustody
     {
         $handler = $this->detectHandler($data);
 
-        $existing   = $handler->find($data);
-        $previousId = null;
+        $existing     = $handler->find($data);
+        $previousId   = null;
+        $previousHash = '';
 
         if ($existing !== null) {
             // ----- Re-sign ---------------------------------------------------
             $oldPayload = $existing['hash'];
             $oldHash    = rtrim($this->parseSignaturePayload($oldPayload)['hashData'], "\0");
+
+            // Always capture the previous payload as previous_hash for chain linking
+            $previousHash = $oldPayload;
 
             $cleanHash = $this->applyHashSalt(
                 $handler->computeOriginalHash($data, $existing)
@@ -485,7 +578,7 @@ class ChainOfCustody
             $signedData  = $handler->signUnsigned($data, $payload, $unsignedInfo);
         }
 
-        $this->store->store($saltedHash, $userId, $fileName, $previousId);
+        $this->store->store($saltedHash, $userId, $fileName, $previousId, $previousHash);
 
         return ['data' => $signedData, 'hash' => $saltedHash];
     }

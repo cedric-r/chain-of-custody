@@ -29,10 +29,12 @@ CREATE TABLE IF NOT EXISTS chain_of_custody_signatures (
     author_name     VARCHAR(255)    NOT NULL COMMENT 'Denormalized display name of the user at signing time',
     file_name       VARCHAR(1024)   NOT NULL COMMENT 'Original file name at signing time',
     previous_id     BIGINT UNSIGNED NULL     COMMENT 'ID of the previous signature in the chain, NULL for first signature',
+    previous_hash   VARCHAR(128)    NULL     COMMENT 'Full signature payload (with node_id) of the previous link in the chain',
     created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_signature_hash (signature_hash),
     INDEX idx_user_id (user_id),
+    INDEX idx_previous_hash (previous_hash),
 
     CONSTRAINT fk_previous_signature
         FOREIGN KEY (previous_id) REFERENCES chain_of_custody_signatures(id)

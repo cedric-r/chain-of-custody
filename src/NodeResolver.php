@@ -143,4 +143,52 @@ class NodeResolver
 
         return $data;
     }
+
+    /**
+     * Look up a chain segment from a remote node by hash.
+     *
+     * @param  string  $nodeId  The node to query.
+     * @param  string  $hash    The signature_hash to start from.
+     * @return array            The remote node's response (record + chain).
+     *
+     * @throws RuntimeException  When the remote node cannot be reached.
+     */
+    public static function chainLookup(string $nodeId, string $hash): array
+    {
+        $url = self::resolve($nodeId);
+        // Replace /verify with /chain in the URL
+        $chainUrl = preg_replace('/\/verify$/', '/chain', $url);
+
+        if ($chainUrl === $url) {
+            $chainUrl = $url . '/chain';
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'method'       => 'POST',
+                'header'       => "Content-Type: application/json\r\n",
+                'content'      => json_encode(['hash' => $hash]),
+                'timeout'      => 15,
+                'ignore_errors' => true,
+            ],
+            'ssl' => [
+                'verify_peer'      => false,
+                'verify_peer_name' => false,
+            ],
+        ]);
+
+        $response = @file_get_contents($chainUrl, false, $context);
+
+        if ($response === false) {
+            throw new RuntimeException("Failed to reach remote node at {$chainUrl}.");
+        }
+
+        $data = json_decode($response, true);
+
+        if (!is_array($data)) {
+            throw new RuntimeException("Invalid response from remote node at {$chainUrl}.");
+        }
+
+        return $data;
+    }
 }

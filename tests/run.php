@@ -1500,7 +1500,7 @@ if (! $dbAvailable) {
                 $chain = $coc->checkChainOfCustody($tmp);
                 assertTrue($chain['authenticated']);
                 assertEquals(2, count($chain['chain']), 'Chain should have original + modified');
-                assertEquals($result['original']['id'], $chain['chain'][1]['id'], 'Original should be second in chain');
+                assertEquals($result['original']['signature_hash'], $chain['chain'][1]['signature_hash'], 'Original should be second in chain (by hash)');
             } finally {
                 if (is_file($tmp)) {
                     unlink($tmp);

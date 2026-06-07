@@ -298,7 +298,8 @@ return [
 | signature_hash | CHAR(64) | SHA-256 hex (optionally salted) |
 | author_name | VARCHAR(255) | Denormalized user name at signing time |
 | file_name | VARCHAR(1024) | Original file name |
-| previous_id | BIGINT UNSIGNED | FK to previous signature in chain |
+| previous_id | BIGINT UNSIGNED | FK to previous signature in chain (legacy) |
+| previous_hash | VARCHAR(128) | Full signature payload of the previous link (cross-node compatible) |
 | created_at | TIMESTAMP | Signature creation time |
 
 ### Migration

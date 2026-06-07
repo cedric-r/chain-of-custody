@@ -245,14 +245,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 // Parse the route
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-$allowedRoutes = ['/sign', '/check', '/lookup', '/update', '/forward', '/verify'];
+$allowedRoutes = ['/sign', '/check', '/lookup', '/update', '/forward', '/verify', '/chain'];
 
 if (!in_array($path, $allowedRoutes, true)) {
     jsonError(404, 'Not found. Available endpoints: /sign, /check, /lookup, /update, /verify');
 }
 
 // Public endpoints (no API key required)
-$publicRoutes = ['/verify'];
+$publicRoutes = ['/verify', '/chain'];
 
 // Authenticate via API key (skip for public routes)
 if (!in_array($path, $publicRoutes, true)) {
@@ -265,10 +265,34 @@ if (!in_array($path, $publicRoutes, true)) {
     }
 }
 
-// Public route — no auth needed
+// Public routes — no auth needed
 if ($path === '/verify') {
     $coc = new ChainOfCustody(CONFIG_PATH);
     handleCheck($coc);
+    exit;
+}
+
+if ($path === '/chain') {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $hash  = trim($input['hash'] ?? $_POST['hash'] ?? '');
+    if ($hash === '') {
+        jsonError(400, 'Missing hash parameter.');
+    }
+    $coc   = new ChainOfCustody(CONFIG_PATH);
+    $store = new SignatureStore(require CONFIG_PATH);
+    $record = $store->findByHash($hash);
+
+    if ($record === null) {
+        jsonError(404, 'Hash not found on this node.');
+    }
+
+    $chain = $coc->resolveFullChain($hash);
+    jsonResponse([
+        'status'  => 'ok',
+        'hash'    => $hash,
+        'record'  => $record,
+        'chain'   => $chain,
+    ]);
     exit;
 }
 

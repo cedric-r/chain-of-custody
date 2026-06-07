@@ -1234,25 +1234,6 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
         return;
     }
 
-    // --- Check if the original is from a remote node -------------------------
-    $origCheck = $coc->checkSignature($originalTmp);
-    if (!empty($origCheck['requires_remote'])) {
-        $remoteNodeId = $origCheck['node_id'];
-        $html = '<div class="msg info">';
-        $html .= '<strong>🔗 Original file signed by a different node</strong><br>';
-        $html .= 'The original file was signed by node <code>' . htmlspecialchars($remoteNodeId) . '</code>. ';
-        $html .= 'The update must be performed on that node. ';
-        $html .= 'To update manually:<br>';
-        $html .= '<code style="font-size:12px;">curl -X POST https://' . htmlspecialchars($remoteNodeId) . '.photo-verify.org/update \</code><br>';
-        $html .= '<code style="font-size:12px;">  -H "Authorization: Bearer &lt;api-key&gt;" \</code><br>';
-        $html .= '<code style="font-size:12px;">  -F "original=@signed-file" -F "modified=@modified-file"</code>';
-        $html .= '</div>';
-        @unlink($originalTmp);
-        @unlink($modifiedTmp);
-        renderPage($action, $html, $userName);
-        return;
-    }
-
     // --- Process ------------------------------------------------------------
     try {
         $result = $coc->updateChainOfCustody($originalTmp, $modifiedTmp, $userId);
@@ -1274,13 +1255,19 @@ function handleUpdateAction(ChainOfCustody $coc, int $userId): void
 
         // Original verification
         $html .= '<div class="msg success">';
-        $html .= '<strong>✅ Original file verified</strong><br>';
+        $html .= '<strong>✅ Original file checked</strong><br>';
         $html .= 'File: ' . htmlspecialchars($originalName) . '<br>';
-        $html .= 'Signed by: ' . htmlspecialchars($original['author_name'])
-               . ' (' . htmlspecialchars($original['email'] ?? '') . ', '
-               . htmlspecialchars($original['auth_provider'] ?? 'local') . ')<br>';
-        $html .= 'Signed at: ' . htmlspecialchars($original['created_at']) . '<br>';
-        $html .= 'Original hash: <code>' . htmlspecialchars($original['signature_hash']) . '</code>';
+
+        if ($original !== null) {
+            $html .= 'Signed by: ' . htmlspecialchars($original['author_name'])
+                   . ' (' . htmlspecialchars($original['email'] ?? '') . ', '
+                   . htmlspecialchars($original['auth_provider'] ?? 'local') . ')<br>';
+            $html .= 'Signed at: ' . htmlspecialchars($original['created_at']) . '<br>';
+            $html .= 'Original hash: <code>' . htmlspecialchars($original['signature_hash']) . '</code>';
+        } else {
+            $html .= '<em>This file was signed by a remote node. The new signature is linked to it via hash.</em>';
+        }
+
         $html .= '</div>';
 
         // New signature
@@ -1362,8 +1349,8 @@ function handleCheckAction(
                         $html .= '<td>' . htmlspecialchars($link['author_name'])
                                . ' (' . htmlspecialchars($link['email'] ?? '') . ', '
                                . htmlspecialchars($link['auth_provider'] ?? 'local') . ')</td>';
-                        $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
-                        $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
+                        $html .= '<td>' . htmlspecialchars($link['created_at'] ?? '') . '</td>';
+                        $html .= '<td><code>' . htmlspecialchars($link['signature_hash'] ?? '') . '</code></td>';
                         $html .= '</tr>';
                     }
                     $html .= '</tbody></table>';
@@ -1405,7 +1392,7 @@ function handleCheckAction(
         $html .= 'Hash: <code>' . htmlspecialchars($result['hash'] ?? '') . '</code><br>';
 
         if (!empty($result['node_id'])) {
-            $html .= 'Node: <code>' . htmlspecialchars($result['node_id']) . '</code><br>';
+            $html .= 'Node: <code>' . htmlspecialchars($result['node_id'] ?? '') . '</code><br>';
         }
 
         $html .= 'Signed by: ' . htmlspecialchars($result['signature']['author_name'])
@@ -1447,11 +1434,21 @@ function handleCheckAction(
             $label = $i === 0 ? 'Current' : (string) ($i + 1);
             $html .= '<tr>';
             $html .= '<td>' . htmlspecialchars($label) . '</td>';
-            $authProvider = $link['auth_provider'] ?? 'local';
-            $html .= '<td>' . htmlspecialchars($link['author_name'])
-                   . ' (' . htmlspecialchars($link['email'] ?? '') . ', ' . htmlspecialchars($authProvider) . ')</td>';
-            $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
-            $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
+
+            if (!empty($link['unresolved'])) {
+                // Cross-node unresolved link
+                $nodeId = htmlspecialchars($link['node_id'] ?? 'unknown');
+                $html .= '<td><em>Remote node: ' . $nodeId . '</em></td>';
+                $html .= '<td>—</td>';
+                $html .= '<td><code>' . htmlspecialchars($link['signature_hash'] ?? '') . '</code></td>';
+            } else {
+                $authProvider = $link['auth_provider'] ?? 'local';
+                $html .= '<td>' . htmlspecialchars($link['author_name'] ?? '')
+                       . ' (' . htmlspecialchars($link['email'] ?? '') . ', ' . htmlspecialchars($authProvider) . ')</td>';
+                $html .= '<td>' . htmlspecialchars($link['created_at'] ?? '') . '</td>';
+                $html .= '<td><code>' . htmlspecialchars($link['signature_hash'] ?? '') . '</code></td>';
+            }
+
             $html .= '</tr>';
         }
 
@@ -1541,8 +1538,8 @@ function handleLookupAction(): void
                     $authProvider = $link['auth_provider'] ?? 'local';
                     $html .= '<td>' . htmlspecialchars($link['author_name'])
                            . ' (' . htmlspecialchars($link['email'] ?? '') . ', ' . htmlspecialchars($authProvider) . ')</td>';
-                    $html .= '<td>' . htmlspecialchars($link['created_at']) . '</td>';
-                    $html .= '<td><code>' . htmlspecialchars($link['signature_hash']) . '</code></td>';
+                    $html .= '<td>' . htmlspecialchars($link['created_at'] ?? '') . '</td>';
+                    $html .= '<td><code>' . htmlspecialchars($link['signature_hash'] ?? '') . '</code></td>';
                     $html .= '</tr>';
                 }
                 $html .= '</tbody></table>';

@@ -48,8 +48,13 @@ class SignatureStore
      * @param  int|null   $previousId  ID of the previous signature in the chain, or NULL.
      * @return int                     Auto-increment ID of the new record.
      */
-    public function store(string $hash, int $userId, string $fileName, ?int $previousId): int
-    {
+    public function store(
+        string $hash,
+        int $userId,
+        string $fileName,
+        ?int $previousId,
+        string $previousHash = '',
+    ): int {
         $stmt = $this->pdo->prepare(
             'SELECT name FROM users WHERE id = :id'
         );
@@ -58,18 +63,21 @@ class SignatureStore
 
         $authorName = $user !== false ? $user['name'] : 'Unknown';
 
+        $previousHashVal = $previousHash !== '' ? $previousHash : null;
+
         $stmt = $this->pdo->prepare(
             'INSERT INTO chain_of_custody_signatures
-                 (signature_hash, author_name, file_name, previous_id, user_id)
-             VALUES (:hash, :author, :file_name, :previous_id, :user_id)'
+                 (signature_hash, author_name, file_name, previous_id, previous_hash, user_id)
+             VALUES (:hash, :author, :file_name, :previous_id, :previous_hash, :user_id)'
         );
 
         $stmt->execute([
-            ':hash'        => $hash,
-            ':author'      => $authorName,
-            ':file_name'   => $fileName,
-            ':previous_id' => $previousId,
-            ':user_id'     => $userId,
+            ':hash'          => $hash,
+            ':author'        => $authorName,
+            ':file_name'     => $fileName,
+            ':previous_id'   => $previousId,
+            ':previous_hash' => $previousHashVal,
+            ':user_id'       => $userId,
         ]);
 
         return (int) $this->pdo->lastInsertId();
@@ -85,7 +93,7 @@ class SignatureStore
     {
         $stmt = $this->pdo->prepare(
             'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
-                    s.previous_id, s.created_at, u.email, u.auth_provider
+                    s.previous_id, s.previous_hash, s.created_at, u.email, u.auth_provider
              FROM chain_of_custody_signatures s
              LEFT JOIN users u ON u.id = s.user_id
              WHERE s.signature_hash = :hash
@@ -110,28 +118,103 @@ class SignatureStore
      */
     public function getChain(int $signatureId): array
     {
-        $chain  = [];
-        $nextId = $signatureId;
+        $chain      = [];
+        $nextHash   = null;
+        $useId      = true;
+        $seenHashLookups = []; // guard against cycles (extracted hashes we've looked up)
 
-        while ($nextId !== null) {
-            $stmt = $this->pdo->prepare(
-                'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
-                        s.previous_id, s.created_at, u.email, u.auth_provider
-                 FROM chain_of_custody_signatures s
-                 LEFT JOIN users u ON u.id = s.user_id
-                 WHERE s.id = :id
-                 LIMIT 1'
-            );
+        while (true) {
+            if ($useId) {
+                // First iteration: fetch by ID
+                $stmt = $this->pdo->prepare(
+                    'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
+                            s.previous_id, s.previous_hash, s.created_at,
+                            u.email, u.auth_provider
+                     FROM chain_of_custody_signatures s
+                     LEFT JOIN users u ON u.id = s.user_id
+                     WHERE s.id = :id
+                     LIMIT 1'
+                );
+                $stmt->execute([':id' => $signatureId]);
+                $useId = false;
+            } elseif ($nextHash !== null) {
+                // The previous_hash may be the full payload format (with node_id prefix).
+                // Extract the actual hash for the DB lookup.
+                $lookupHash = $nextHash;
+                $plen = strlen($nextHash);
+                if ($plen > 2 && $plen < 100) {
+                    $len = ord($nextHash[0]);
+                    if ($len > 0 && $len < 32 && $plen > $len + 2 && $nextHash[$len + 1] === ':') {
+                        $lookupHash = rtrim(substr($nextHash, $len + 2), "\0");
+                    }
+                }
 
-            $stmt->execute([':id' => $nextId]);
+                // Guard against cycles — if we've already looked up this extracted hash, break
+                if (in_array($lookupHash, $seenHashLookups, true)) {
+                    break;
+                }
+                $seenHashLookups[] = $lookupHash;
+
+                $stmt = $this->pdo->prepare(
+                    'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
+                            s.previous_id, s.previous_hash, s.created_at,
+                            u.email, u.auth_provider
+                     FROM chain_of_custody_signatures s
+                     LEFT JOIN users u ON u.id = s.user_id
+                     WHERE s.signature_hash = :hash
+                     LIMIT 1'
+                );
+                $stmt->execute([':hash' => $lookupHash]);
+            } else {
+                break;
+            }
+
             $row = $stmt->fetch();
 
             if ($row === false) {
+                // Hash not found locally — create an unresolved link entry
+                // Parse node_id from the payload-format previous_hash
+                $payload   = $nextHash;
+                $plen      = strlen($payload);
+                $nodeId    = '';
+                $innerHash = $payload;
+
+                if ($plen > 2) {
+                    $len = ord($payload[0]);
+                    if ($len > 0 && $len < 32 && $plen > $len + 2 && $payload[$len + 1] === ':') {
+                        $nodeId    = substr($payload, 1, $len);
+                        $innerHash = rtrim(substr($payload, $len + 2), "\0");
+                    }
+                }
+
+                $chain[] = [
+                    'unresolved'     => true,
+                    'signature_hash' => $innerHash,
+                    'previous_hash'  => null,
+                    'node_id'        => $nodeId,
+                    'author_name'    => '(remote)',
+                    'created_at'     => null,
+                ];
                 break;
             }
 
             $chain[] = $row;
-            $nextId  = $row['previous_id'] !== null ? (int) $row['previous_id'] : null;
+
+            // Follow previous_hash first, fall back to previous_id
+            if (!empty($row['previous_hash'])) {
+                $nextHash = $row['previous_hash'];
+            } elseif ($row['previous_id'] !== null) {
+                $nextHash = null;
+                // Legacy: use the previous record's ID to find its hash, then continue
+                $prevStmt = $this->pdo->prepare(
+                    'SELECT signature_hash FROM chain_of_custody_signatures WHERE id = :id LIMIT 1'
+                );
+                $prevStmt->execute([':id' => (int) $row['previous_id']]);
+                $prevRow = $prevStmt->fetch();
+                $nextHash = $prevRow !== false ? $prevRow['signature_hash'] : null;
+            } else {
+                $nextHash = null;
+            }
         }
 
         return $chain;
@@ -175,7 +258,33 @@ class SignatureStore
     }
 
     /**
-     * Find a user by email address.
+     * Find the earliest signature record by hash (lowest id, ASC order).
+     * Used when resolving cross-node chains to get the original record,
+     * not the latest re-sign (which may have a different previous_hash).
+     *
+     * @return array|null  Record row or NULL if not found.
+     */
+    public function findEarliestByHash(string $hash): ?array
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT s.id, s.user_id, s.signature_hash, s.author_name, s.file_name,
+                    s.previous_id, s.previous_hash, s.created_at, u.email, u.auth_provider
+             FROM chain_of_custody_signatures s
+             LEFT JOIN users u ON u.id = s.user_id
+             WHERE s.signature_hash = :hash
+             ORDER BY s.id ASC
+             LIMIT 1'
+        );
+
+        $stmt->execute([':hash' => $hash]);
+
+        $row = $stmt->fetch();
+
+        return $row !== false ? $row : null;
+    }
+
+    /**
+     * Find a user by their email address.
      *
      * @return array|null  User row or NULL if not found.
      */
