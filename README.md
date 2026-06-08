@@ -22,12 +22,12 @@ PHP library that authenticates image and raw camera files (JPEG, PNG, TIFF, CR2,
 
 | Format | Mechanism | Overhead |
 |--------|-----------|----------|
-| TIFF | Private tag 65000 in appended IFD | 83 bytes |
-| CR2 | Same as TIFF (same magic number) | 83 bytes |
-| NEF | Same as TIFF (same magic number) | 83 bytes |
-| JPEG | APP8 marker `FF E8 "CoC\0"` | 73 bytes |
-| PNG | Private ancillary chunk `coCs` | 77 bytes |
-| CR3 | ISOBMFF box `CoC\0` appended at end | 73 bytes |
+| TIFF | Private tag 65000 in appended IFD | 101 bytes |
+| CR2 | Same as TIFF (same magic number) | 101 bytes |
+| NEF | Same as TIFF (same magic number) | 101 bytes |
+| JPEG | APP8 marker `FF E8 "CoC\0"` | 91 bytes |
+| PNG | Private ancillary chunk `coCs` | 95 bytes |
+| CR3 | ISOBMFF box `CoC\0` appended at end | 91 bytes |
 
 ## Quick Start
 

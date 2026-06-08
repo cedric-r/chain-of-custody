@@ -16,12 +16,12 @@ Successive signatures are linked to form an auditable chain of custody.
 
 | Format | Mechanism | Overhead | Status |
 |--------|-----------|----------|--------|
-| TIFF   | Private tag 65000 in appended IFD | 83 bytes | ✅ Supported |
-| CR2    | Same as TIFF (same magic number 42) | 83 bytes | ✅ Via TIFF handler |
-| NEF    | Same as TIFF (same magic number 42) | 83 bytes | ✅ Via TIFF handler |
-| JPEG   | APP8 marker with `CoC\0` identifier | 73 bytes | ✅ Supported |
-| PNG    | Private ancillary chunk `coCs` | 77 bytes | ✅ Supported |
-| CR3    | ISOBMFF box `CoC\0` appended at end | 73 bytes | ✅ Supported |
+| TIFF   | Private tag 65000 in appended IFD | 101 bytes | ✅ Supported |
+| CR2    | Same as TIFF (same magic number 42) | 101 bytes | ✅ Via TIFF handler |
+| NEF    | Same as TIFF (same magic number 42) | 101 bytes | ✅ Via TIFF handler |
+| JPEG   | APP8 marker with `CoC\0` identifier | 91 bytes | ✅ Supported |
+| PNG    | Private ancillary chunk `coCs` | 95 bytes | ✅ Supported |
+| CR3    | ISOBMFF box `CoC\0` appended at end | 91 bytes | ✅ Supported |
 | BigTIFF| — | — | ❌ Not supported (64-bit offsets) |
 
 ---
@@ -38,8 +38,8 @@ should not conflict with any registered public tags.
 | Tag ID      | 65000        |
 | Name        | ChainOfCustodySignature |
 | Type        | 2 (ASCII)    |
-| Count       | 65 bytes     |
-| Data format | 64-character hex-encoded SHA-256 digest followed by a NUL byte |
+| Count       | 83 bytes     |
+| Data format | Node_id prefix (1 byte length + 16 bytes hex + 1 byte colon) + 64-character hex-encoded SHA-256 digest + NUL byte |
 
 The signature is stored by appending a new Image File Directory (IFD) at the
 end of the TIFF file's IFD chain. This is valid per the TIFF 6.0 specification,
@@ -57,15 +57,15 @@ which allows multiple IFDs chained via the `next IFD offset` field.
 | CoC Signature IFD           |  ← appended (18 bytes)
 |   entry_count: 1            |
 |   tag 65000, type=ASCII,    |
-|     count=65, offset → data |
+|     count=83, offset → data |
 |   next_ifd_offset: 0        |
 +-----------------------------+
-| CoC Signature Data          |  ← appended (65 bytes)
-|   "abc123...def\0"          |
+| CoC Signature Data          |  ← appended (83 bytes)
+|   node_id_prefix + hash\0   |
 +-----------------------------+
 ```
 
-Total overhead per signing: **83 bytes**.
+Total overhead per signing: **101 bytes**.
 
 ### Verification
 
@@ -90,8 +90,10 @@ the SOI marker:
 
 ```
 FF D8             SOI
-FF E8 00 47      APP8 marker + length (71 = 2 + 4 + 65)
+FF E8 00 5B      APP8 marker + length (89 = 2 + 4 + 83)
 43 6F 43 00      "CoC\0" identifier
+[node_id:1+16]    1 byte length + 16 hex chars node ID
+3A                ":" colon delimiter
 [64 hex chars]    SHA-256 hex digest
 00                NUL terminator
 ...               remaining JPEG markers and data
@@ -100,7 +102,7 @@ FF D9             EOI
 
 ### Verification
 
-The APP8 segment (73 bytes total) is removed from the file and SHA-256 is
+The APP8 segment (91 bytes total) is removed from the file and SHA-256 is
 computed on the remainder. The computed hash is compared to the stored hash.
 
 ### Rationale
@@ -129,9 +131,9 @@ The chunk is inserted right after the required IHDR chunk.
 └───────────────────────────────────────────────────────┘
 
 ┌─ coCs chunk structure ────────────────┐
-│  4 bytes: data length = 65            │
+│  4 bytes: data length = 83            │
 │  4 bytes: type = "coCs"              │
-│ 65 bytes: SHA-256 hex + NUL          │
+│ 83 bytes: node_id prefix + hash + NUL│
 │  4 bytes: CRC-32 over type + data    │
 └───────────────────────────────────────┘
 ```
@@ -145,7 +147,7 @@ reject the file, so correct CRC values are required.
 
 ### Verification
 
-The entire `coCs` chunk (77 bytes) is removed from the file. SHA-256 is
+The entire `coCs` chunk (95 bytes) is removed from the file. SHA-256 is
 computed on the remaining data and compared to the stored hash.
 
 ---
@@ -160,9 +162,9 @@ at the end of the file.
 
 ```
 ┌─ Box structure ──────────────────────────────────────┐
-│  4 bytes: big-endian box size (73)                    │
+│  4 bytes: big-endian box size (91)                    │
 │  4 bytes: box type = "CoC\0"                         │
-│ 65 bytes: SHA-256 hex + NUL                          │
+│ 83 bytes: node_id prefix + hash + NUL                │
 └───────────────────────────────────────────────────────┘
 ```
 
@@ -173,7 +175,7 @@ which identifies CR3 files.
 
 ### Verification
 
-The `CoC\0` box (73 bytes) is removed from the file. SHA-256 is computed on
+The `CoC\0` box (91 bytes) is removed from the file. SHA-256 is computed on
 the remaining data and compared to the stored hash.
 
 ---
@@ -190,6 +192,24 @@ storedHash = SHA-256(innerHash || salt)
 The salt is configured via the `hash_salt` key in the configuration file.
 When the salt is empty, `storedHash` equals `innerHash` (backward-compatible).
 The salt prevents pre-computed hash lookups against the database.
+
+### Signature payload format
+
+The hash stored in the file (and used as `previous_hash` for chain linking)
+includes an optional node identifier prefix:
+
+```
+[1 byte: node_id length (N)]
+[N bytes: node_id hex string]  
+[1 byte: colon delimiter]
+[64 bytes: salted SHA-256 hex]
+[1 byte: NUL terminator]
+```
+
+When no node_id is configured, the payload is just the 64-char hex + NUL
+(65 bytes, legacy format). When configured, the payload is 83 bytes.
+The node_id makes each payload self-describing — any verifier can parse
+it to determine which node owns the signature.
 
 ---
 
@@ -220,7 +240,7 @@ CREATE TABLE chain_of_custody_signatures (
     author_name     VARCHAR(255) NOT NULL,
     file_name       VARCHAR(1024) NOT NULL,
     previous_id     BIGINT UNSIGNED NULL,
-    previous_hash   CHAR(64) NULL,
+    previous_hash   VARCHAR(128) NULL,
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_signature_hash (signature_hash),
@@ -278,7 +298,44 @@ Modified (unsigned) → innerHash = SHA-256(data)
                     → storedHash = SHA-256(innerHash || salt)
                     → embed storedHash in modified file
                     → store new record with previous_id → original's ID
+                    → store previous_hash = original's full signature payload
 ```
+
+### Cross-node chain resolution
+
+When a file is checked, the chain follows `previous_hash` links backward.
+If a `previous_hash` contains a node_id different from the local node,
+the system forwards the hash to that node's `/chain` endpoint. The remote
+node resolves its own chain segment (recursively forwarding if needed)
+and returns the result. Segments are concatenated to form the complete
+chain regardless of how many nodes the file has passed through.
+
+```
+Sign on Node A → signature X
+Update on Node B (original: X) → signature Y
+Update on Node C (original: Y) → signature Z
+
+Check Z on Node C:
+  → C finds Z (local), previous_hash → Node B
+  → C forwards hash_Y to B's /chain
+  → B finds Y (local), previous_hash → Node A
+  → B forwards hash_X to A's /chain
+  → A finds X, no previous_hash → returns [X]
+  → B concatenates [Y, X] → returns to C
+  → C concatenates [Z, Y, X] → displays full chain
+```
+
+### Known limitations
+
+**Same server, same file, same hash.** If the same file is signed on the
+same server twice (e.g. A → B → A), the two signatures produce identical
+hashes (same content, same salt). The chain resolution detects this via
+`findEarliestByHash()` which returns the original record to break the
+cycle. However, the chain segment on server A will only show the original
+signature, not the re-sign. This is a fundamental consequence of
+hash-based linking — two records with the same hash cannot be
+distinguished in the backward chain traversal. The workaround is to use
+three nodes (A → B → C) when demonstrating distributed chain resolution.
 
 ### Lookup
 
