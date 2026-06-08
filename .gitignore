@@ -1,7 +1,6 @@
 /.vs
 /.claude
 GOAL.md
-/www/GOAL.md
-CLAUDE.md
-/www/CLAUDE.md
+**/GOAL.md
+**/CLAUDE.md
 DISTRIBUTED-PLAN.md
