@@ -15,7 +15,10 @@ PHP library that authenticates image and raw camera files (JPEG, PNG, TIFF, CR2,
 - **Auth provenance** — authentication method (local/google/github) shown next to user name in signature records
 - **REST API** — remote signing, verification, and lookup with API key authentication
 - **Distributed** — per-node identifiers for federated verification across independent servers
-- **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, API Keys, Feedback, and Home tabs
+- **Recursive chain resolution** — cross-node chains are resolved automatically by forwarding to each node's `/chain` endpoint
+- **Password reset** — forgot/reset flow via email
+- **API key management** — generate and revoke API keys for remote access
+- **Web interface** — single-page PHP application with Sign, Check, Lookup, Update, API Keys, Feedback, GDPR, and Home tabs
 - **Captcha** — feedback form protected by simple Q&A captcha
 
 ## Supported Formats
@@ -327,18 +330,27 @@ src/
 ├── PngSignatureHandler.php     # PNG coCs chunk
 ├── Cr3SignatureHandler.php     # CR3 ISOBMFF box
 ├── OAuthProvider.php           # Google/GitHub OAuth 2.0 helper
+├── ApiKeyStore.php             # API key generation + authentication
+├── NodeResolver.php            # DNS-based node discovery
 └── SignatureStore.php          # PDO/MySQL store for signature records + users
 
-config.example.php              # Template DB + SMTP configuration
+config.example.php              # Template DB + SMTP + OAuth configuration
 schema.sql                      # Database DDL (fresh install)
 migrate.sql                     # Migration script (existing installs)
+api-migrate.sql                 # API keys table migration
 CHAIN_OF_CUSTODY_STANDARD.md    # Tag and protocol specification
+DISTRIBUTED.md                  # Distributed architecture overview
+DISTRIBUTED-PLAN.md             # Distribution implementation plan
+PROJECT.txt                     # Project description
 README.md                       # This file
+sign-all.sh                     # Batch signing script
 
 www/
 ├── index.php                   # Single-page web app with auth
 ├── config.php                  # DB + SMTP + OAuth configuration
-└── photo-verify-logo-transparent.png
+├── photo-verify-logo-transparent.png
+├── CLAUDE.md                   # Website documentation
+└── GOAL.md                     # Original requirements
 
 api/
 ├── index.php                   # REST API entry point
@@ -346,13 +358,20 @@ api/
 └── CLAUDE.md                   # API documentation
 
 tests/
-├── run.php                     # Full test suite (run: php tests/run.php)
+├── run.php                     # Full test suite (97+ tests)
 ├── config.php                  # Test DB configuration
-└── config.example.php          # Template for test config
+├── config.example.php          # Template for test config
+├── CLAUDE.md                   # Test documentation
 
 demo/
 ├── sign.php, check.php, update.php   # CLI demo scripts
-└── image.jpg, image.png, image.tif   # Sample images
+├── image.jpg, image.png, image.tif   # Sample images
+└── CLAUDE.md                   # Demo documentation
+
+bin/
+├── generate-node-id            # Node ID generator
+├── register-node.sh            # Node registration script
+└── CLAUDE.md                   # Utility documentation
 ```
 
 ## Web Interface Tabs
@@ -363,8 +382,10 @@ demo/
 | Sign | Yes | Upload and sign a file |
 | Check | No | Verify a signed file + view chain of custody |
 | Lookup | No | Upload unsigned file, search database by hash |
-| Update | Yes | Two-file update to extend the chain |
+| Update | Yes | Two-file update to extend the chain (supports remote originals) |
+| API Keys | Yes | Generate and revoke API keys for remote access |
 | Feedback | No | Message form with captcha, emailed to admin |
+| GDPR | No | GDPR compliance information |
 
 ## Architecture
 
