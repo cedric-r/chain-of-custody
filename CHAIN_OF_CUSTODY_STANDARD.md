@@ -334,8 +334,7 @@ hashes (same content, same salt). The chain resolution detects this via
 cycle. However, the chain segment on server A will only show the original
 signature, not the re-sign. This is a fundamental consequence of
 hash-based linking — two records with the same hash cannot be
-distinguished in the backward chain traversal. The workaround is to use
-three nodes (A → B → C) when demonstrating distributed chain resolution.
+distinguished in the backward chain traversal.
 
 ### Lookup
 
