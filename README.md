@@ -358,7 +358,10 @@ api/
 └── CLAUDE.md                   # API documentation
 
 tests/
-├── run.php                     # Full test suite (97+ tests)
+├── run.php                     # Handler + integration tests (97)
+├── ApiKeyStoreTest.php         # API key lifecycle tests (19)
+├── OAuthProviderTest.php       # OAuth config/URL tests (18)
+├── NodeResolverTest.php        # Node resolution error-path tests (8)
 ├── config.php                  # Test DB configuration
 ├── config.example.php          # Template for test config
 ├── CLAUDE.md                   # Test documentation
