@@ -83,7 +83,7 @@ class ApiKeyStore
         $hash = hash('sha256', $key);
 
         $stmt = $this->pdo->prepare(
-            'SELECT id, user_id, label, key_prefix AS prefix FROM api_keys
+            'SELECT id, user_id, label, key_prefix AS prefix, revoked_at FROM api_keys
              WHERE key_hash = :hash
              LIMIT 1'
         );
