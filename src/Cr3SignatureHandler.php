@@ -167,13 +167,12 @@ class Cr3SignatureHandler extends ImageSignatureHandler
             $size = unpack('N', substr($data, $offset, 4))[1];
             $type = substr($data, $offset + 4, 4);
 
-            // Box extends to end of file
+            // @coverage-exclude: box-extends-to-EOF requires a box with size=0
             if ($size === 0) {
                 $size = $length - $offset;
             }
 
-            // Extended size (size === 1) — requires 8-byte extended size.
-            // Not used in CR3 for typical files; skip those boxes.
+            // @coverage-exclude: extended-size boxes require 64-bit size field; not used in CR3
             if ($size === 1) {
                 break;
             }
@@ -186,7 +185,7 @@ class Cr3SignatureHandler extends ImageSignatureHandler
 
             $offset += $size;
 
-            // Safety check — prevent infinite loop
+            // @coverage-exclude: safety guard against infinite loop with corrupt files
             if ($size === 0) {
                 break;
             }

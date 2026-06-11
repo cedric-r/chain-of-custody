@@ -20,6 +20,8 @@ class NodeResolver
     /**
      * Resolve a node ID to its verification URL.
      *
+     * @coverage-exclude: Requires real DNS resolution for photo-verify.org zone.
+     *
      * Looks up <node_id>.<zone> via DNS CNAME or A record.
      * Falls back to a configurable static mapping if DNS fails.
      *
@@ -55,6 +57,8 @@ class NodeResolver
     /**
      * Check whether a node ID is reachable.
      *
+     * @coverage-exclude: Requires real DNS + HTTP to verify node reachability.
+     *
      * @return bool  True if the node resolves and responds to a HEAD request.
      */
     public static function ping(string $nodeId): bool
@@ -73,6 +77,8 @@ class NodeResolver
 
     /**
      * Forward a verification request to a remote node.
+     *
+     * @coverage-exclude: Requires real HTTP connection to a remote node.
      *
      * POSTs the file to the remote node's /verify endpoint and returns
      * the parsed JSON response.
@@ -146,6 +152,8 @@ class NodeResolver
 
     /**
      * Look up a chain segment from a remote node by hash.
+     *
+     * @coverage-exclude: Requires real HTTP connection to a remote node.
      *
      * @param  string  $nodeId  The node to query.
      * @param  string  $hash    The signature_hash to start from.

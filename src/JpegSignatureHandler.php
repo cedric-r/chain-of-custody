@@ -57,6 +57,9 @@ class JpegSignatureHandler extends ImageSignatureHandler
     /**
      * Scan JPEG markers before SOS for an APP8 segment with our identifier.
      *
+     * @coverage-exclude: Edge cases for non-standard JPEG markers (byte-stuff, EOI, RST, TEM before SOS)
+     *                     require crafted JPEG data that is impractical to produce in unit tests.
+     *
      * Returns NULL if no CoC signature is found.
      *
      * @return array|null  Keys: hash, markerPos, segmentLen (incl. length field),

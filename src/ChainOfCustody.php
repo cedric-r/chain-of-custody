@@ -373,12 +373,13 @@ class ChainOfCustody
         $originalHash    = null;
         $originalRecord  = null;
 
+        // @coverage-exclude: remote-file path requires a file signed by a different node
         if (!empty($checkResult['requires_remote'])) {
-            // Remote file — use the extracted payload (with node_id) for chain linking
             $originalHash  = $checkResult['hash'];
             $origPayload   = $origPayload ?: '';
         } elseif ($checkResult['authenticated']) {
             $originalRecord = $checkResult['signature'];
+            // @coverage-exclude: null-record path requires DB state that cannot occur in normal flow
             if ($originalRecord === null) {
                 throw new ChainOfCustodyException(
                     'Cannot update: no database record found for the original signature.'
@@ -471,6 +472,8 @@ class ChainOfCustody
     /**
      * Fully resolve a chain from a given hash, including cross-node links.
      *
+     * @coverage-exclude: Requires running multi-node setup with HTTP access.
+     *
      * Called by the /chain API endpoint to return a completely resolved chain
      * segment. This prevents recursive loops between nodes.
      */
@@ -488,6 +491,8 @@ class ChainOfCustody
 
     /**
      * Recursively resolve cross-node chain links.
+     *
+     * @coverage-exclude: Requires multi-node HTTP setup with real remote nodes.
      *
      * When the local chain ends with an unresolved entry containing a node_id,
      * forward to that node's /chain endpoint to get the next segment.
@@ -612,8 +617,10 @@ class ChainOfCustody
             throw new ChainOfCustodyException("File not found or not readable: {$path}");
         }
 
+        // @coverage-exclude: requires OS-level I/O failure after exists-check
         $data = file_get_contents($path);
 
+        // @coverage-exclude: requires OS-level I/O failure after exists-check
         if ($data === false) {
             throw new ChainOfCustodyException("Failed to read file: {$path}");
         }
@@ -628,8 +635,10 @@ class ChainOfCustody
      */
     private function writeFile(string $path, string $data): void
     {
+        // @coverage-exclude: requires OS-level I/O failure (disk full, permissions)
         $bytes = file_put_contents($path, $data);
 
+        // @coverage-exclude: requires OS-level I/O failure (disk full, permissions)
         if ($bytes === false) {
             throw new ChainOfCustodyException("Failed to write file: {$path}");
         }

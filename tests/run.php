@@ -1808,6 +1808,452 @@ if (! $dbAvailable) {
     });
 }
 
+// ===========================================================================
+// 5. SignatureStore — public user & OAuth methods
+// ===========================================================================
+
+echo "\n══════════════════════════════════════════════════════════════════\n";
+echo "  SignatureStore — User Methods\n";
+echo "══════════════════════════════════════════════════════════════════\n\n";
+
+if (!isset($testPdo)) {
+    skip('createUser', 'No DB');
+    skip('findUserByEmail', 'No DB');
+    skip('findUserById', 'No DB');
+    skip('verifyUser', 'No DB');
+    skip('findOrCreateOAuthUser (new)', 'No DB');
+    skip('findOrCreateOAuthUser (existing)', 'No DB');
+    skip('findOrCreateOAuthUser (existing email)', 'No DB');
+    skip('findUserByVerificationToken', 'No DB');
+    skip('setResetToken and updatePassword', 'No DB');
+    skip('findEarliestByHash', 'No DB');
+} else {
+    $store = new SignatureStore(require __DIR__ . '/config.php');
+
+    test('createUser creates a new user record', function () use ($store, $testPdo) {
+        $token   = bin2hex(random_bytes(16));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+        $id = $store->createUser('newuser@test.local', 'hash123', 'New User', $token, $expires);
+
+        assertTrue($id > 0, 'Should return a positive ID');
+
+        $stmt = $testPdo->prepare('SELECT id, email, name, password_hash FROM users WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch();
+        assertNotNull($row);
+        assertEquals('newuser@test.local', $row['email']);
+        assertEquals('New User', $row['name']);
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $id]);
+    });
+
+    test('findUserByEmail finds existing user', function () use ($store, $aliceId) {
+        $user = $store->findUserByEmail('alice@test.local');
+        assertNotNull($user);
+        assertEquals($aliceId, (int) $user['id']);
+        assertEquals('Alice', $user['name']);
+    });
+
+    test('findUserByEmail returns null for unknown email', function () use ($store) {
+        assertNull($store->findUserByEmail('nonexistent@nowhere.local'));
+    });
+
+    test('findUserById finds existing user', function () use ($store, $aliceId) {
+        $user = $store->findUserById($aliceId);
+        assertNotNull($user);
+        assertEquals('alice@test.local', $user['email']);
+        assertEquals('Alice', $user['name']);
+    });
+
+    test('findUserById returns null for unknown id', function () use ($store) {
+        assertNull($store->findUserById(99999999));
+    });
+
+    test('verifyUser marks email as verified', function () use ($store, $testPdo) {
+        // Create a user with a verification token
+        $token   = bin2hex(random_bytes(16));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+        $id = $store->createUser('verify@test.local', 'hash123', 'Verify User', $token, $expires);
+
+        $store->verifyUser($id);
+
+        $stmt = $testPdo->prepare('SELECT email_verified, verification_token FROM users WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch();
+        assertEquals(1, (int) $row['email_verified']);
+        assertNull($row['verification_token']);
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $id]);
+    });
+
+    test('findUserByVerificationToken finds user by token', function () use ($store, $testPdo) {
+        $token   = bin2hex(random_bytes(16));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+        $id = $store->createUser('tokenuser@test.local', 'hash123', 'Token User', $token, $expires);
+
+        $user = $store->findUserByVerificationToken($token);
+        assertNotNull($user);
+        assertEquals($id, (int) $user['id']);
+        assertEquals('Token User', $user['name']);
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $id]);
+    });
+
+    test('findUserByVerificationToken returns null for invalid token', function () use ($store) {
+        assertNull($store->findUserByVerificationToken('nonexistent-token'));
+    });
+
+    test('setResetToken and updatePassword flow', function () use ($store, $testPdo, $aliceId) {
+        // Set a reset token
+        $token   = bin2hex(random_bytes(16));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+        $store->setResetToken($aliceId, $token, $expires);
+
+        // Verify token was stored
+        $user = $store->findUserByVerificationToken($token);
+        assertNotNull($user);
+        assertEquals($aliceId, (int) $user['id']);
+
+        // Update the password
+        $newHash = password_hash('newpassword', PASSWORD_DEFAULT);
+        $store->updatePassword($aliceId, $newHash);
+
+        // Verify the update
+        $stmt = $testPdo->prepare('SELECT password_hash, verification_token FROM users WHERE id = :id');
+        $stmt->execute([':id' => $aliceId]);
+        $row = $stmt->fetch();
+        assertEquals($newHash, $row['password_hash']);
+        assertNull($row['verification_token']);
+
+        // Restore original password
+        $store->updatePassword($aliceId, password_hash('test', PASSWORD_DEFAULT));
+    });
+
+    test('findOrCreateOAuthUser creates a new OAuth user', function () use ($store, $testPdo) {
+        $id = $store->findOrCreateOAuthUser('google', 'oauth123', 'oauth_new@test.local', 'OAuth User');
+        assertTrue($id > 0, 'Should return a positive ID');
+
+        // Verify the user was created
+        $stmt = $testPdo->prepare('SELECT id, email, auth_provider, provider_id FROM users WHERE id = :id');
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch();
+        assertEquals('google', $row['auth_provider']);
+        assertEquals('oauth123', $row['provider_id']);
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $id]);
+    });
+
+    test('findOrCreateOAuthUser returns existing user by provider+pid', function () use ($store, $testPdo) {
+        // Create first
+        $id1 = $store->findOrCreateOAuthUser('github', 'github456', 'oauth_existing@test.local', 'OAuth Existing');
+
+        // Call again — should return same ID
+        $id2 = $store->findOrCreateOAuthUser('github', 'github456', 'oauth_existing@test.local', 'OAuth Existing');
+        assertEquals($id1, $id2, 'Should return the same user ID');
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $id1]);
+    });
+
+    test('findOrCreateOAuthUser returns existing user by email (different provider)', function () use ($store, $testPdo) {
+        // Create a local user first
+        $token   = bin2hex(random_bytes(16));
+        $expires = date('Y-m-d H:i:s', time() + 3600);
+        $localId = $store->createUser('oauth_same@test.local', 'hash123', 'Original', $token, $expires);
+
+        // OAuth login with same email, different provider
+        $oauthId = $store->findOrCreateOAuthUser('google', 'google789', 'oauth_same@test.local', 'OAuth Same');
+        assertEquals($localId, $oauthId, 'Should return the existing local user ID');
+
+        $testPdo->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $localId]);
+    });
+
+    test('findEarliestByHash returns the first (oldest) record', function () use ($coc, $aliceId, $testPdo) {
+        // Sign the same file twice to create multiple records with the same hash
+        $path = copyTif();
+        try {
+            $coc->createSignature($path, $aliceId);
+            $coc->createSignature($path, $aliceId);
+
+            // Get the hash
+            $check = $coc->checkSignature($path);
+            $hash = $check['hash'];
+
+            // Now call findEarliestByHash via store
+            $store = new SignatureStore(require __DIR__ . '/config.php');
+            $earliest = null;
+            $refl = new ReflectionClass($store);
+            $method = $refl->getMethod('findEarliestByHash');
+            $method->setAccessible(true);
+            $earliest = $method->invoke($store, $hash);
+
+            assertNotNull($earliest, 'Should find a record');
+
+            // Verify it's the earliest by checking it's the lowest id for this hash
+            $stmt = $testPdo->prepare(
+                'SELECT MIN(id) as min_id FROM chain_of_custody_signatures WHERE signature_hash = :hash'
+            );
+            $stmt->execute([':hash' => $hash]);
+            $row = $stmt->fetch();
+            assertEquals((int) $row['min_id'], (int) $earliest['id'], 'Should be the minimum ID');
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+}
+
+// ===========================================================================
+// 6. ChainOfCustody — constructor edge cases
+// ===========================================================================
+
+echo "\n══════════════════════════════════════════════════════════════════\n";
+echo "  ChainOfCustody — Config & Accessor Edge Cases\n";
+echo "══════════════════════════════════════════════════════════════════\n\n";
+
+test('constructor throws for missing config file', function () {
+    assertThrows(ChainOfCustodyException::class, function () {
+        new ChainOfCustody('/tmp/nonexistent_config_xyz.php');
+    });
+});
+
+test('constructor throws for config returning non-array', function () {
+    $badConfig = __DIR__ . '/_bad_config.php';
+    file_put_contents($badConfig, '<?php return "not_an_array";');
+    try {
+        assertThrows(ChainOfCustodyException::class, function () use ($badConfig) {
+            new ChainOfCustody($badConfig);
+        });
+    } finally {
+        @unlink($badConfig);
+    }
+});
+
+test('getNodeId returns configured value', function () {
+    $configPath = __DIR__ . '/_node_id_test_config.php';
+    file_put_contents($configPath, '<?php return [
+        "node_id" => "0123456789abcdef",
+        "host" => "127.0.0.1",
+        "port" => 3306,
+        "dbname" => "chain_of_custody_test",
+        "username" => "coc_test",
+        "password" => "coc_test_pass",
+        "charset" => "utf8mb4",
+    ];');
+    try {
+        $coc = new ChainOfCustody($configPath);
+        assertEquals('0123456789abcdef', $coc->getNodeId());
+    } finally {
+        @unlink($configPath);
+    }
+});
+
+test('getNodeId returns empty string when not configured', function () use ($coc) {
+    assertEquals('', $coc->getNodeId());
+});
+
+test('parseSignaturePayload handles empty payload', function () use ($coc) {
+    $refl = new ReflectionClass(ChainOfCustody::class);
+    $method = $refl->getMethod('parseSignaturePayload');
+    $method->setAccessible(true);
+
+    $result = $method->invoke($coc, '');
+    assertEquals('', $result['nodeId']);
+    assertEquals('', $result['hashData']);
+});
+
+test('parseSignaturePayload handles very short payload', function () use ($coc) {
+    $refl = new ReflectionClass(ChainOfCustody::class);
+    $method = $refl->getMethod('parseSignaturePayload');
+    $method->setAccessible(true);
+
+    $result = $method->invoke($coc, 'a');
+    assertEquals('', $result['nodeId']);
+    assertEquals('a', $result['hashData']);
+});
+
+// ===========================================================================
+// 7. Format handler — edge case tests
+// ===========================================================================
+
+echo "\n══════════════════════════════════════════════════════════════════\n";
+echo "  Format Handler — Edge Case Tests\n";
+echo "══════════════════════════════════════════════════════════════════\n\n";
+
+echo "── TIFF big-endian (MM)\n";
+
+test('TiffSignatureHandler detects big-endian TIFF header', function () {
+    $handler = new TiffSignatureHandler();
+    // Build a minimal big-endian TIFF header
+    $beTiff = "MM\x00\x2a\x00\x00\x00\x08";
+    assertTrue($handler->detect($beTiff));
+});
+
+test('TiffSignatureHandler detects big-endian TIFF from full file', function () {
+    // Read the test TIFF and convert to big-endian format
+    $data = readTiff();
+    // The test file is II — flip byte order to MM, swap 42 to 0x002A format
+    $beHeader = "MM" . pack('n', 42) . pack('N', 8);
+    $modified = $beHeader . substr($data, 8);
+    $handler = new TiffSignatureHandler();
+    assertTrue($handler->detect($modified));
+});
+
+test('TiffSignatureHandler detectByteOrder throws on data too small', function () {
+    $handler = new TiffSignatureHandler();
+    $refl = new ReflectionClass(TiffSignatureHandler::class);
+    $method = $refl->getMethod('detectByteOrder');
+    $method->setAccessible(true);
+
+    assertThrows(InvalidImageException::class, function () use ($method, $handler) {
+        $method->invoke($handler, "II\x00");
+    });
+});
+
+test('TiffSignatureHandler detectByteOrder throws on unknown byte order', function () {
+    $handler = new TiffSignatureHandler();
+    $refl = new ReflectionClass(TiffSignatureHandler::class);
+    $method = $refl->getMethod('detectByteOrder');
+    $method->setAccessible(true);
+
+    assertThrows(InvalidImageException::class, function () use ($method, $handler) {
+        $method->invoke($handler, "XX\x2a\x00\x08\x00\x00\x00");
+    });
+});
+
+test('TiffSignatureHandler detectByteOrder throws on bad magic number', function () {
+    $handler = new TiffSignatureHandler();
+    $refl = new ReflectionClass(TiffSignatureHandler::class);
+    $method = $refl->getMethod('detectByteOrder');
+    $method->setAccessible(true);
+
+    assertThrows(InvalidImageException::class, function () use ($method, $handler) {
+        $method->invoke($handler, "II\x01\x00\x08\x00\x00\x00");
+    });
+});
+
+echo "\n── CR3 edge cases\n";
+
+test('Cr3SignatureHandler detect rejects ftyp with size < 16', function () {
+    $handler = new Cr3SignatureHandler();
+    // ftyp box with size=12 (too small for major brand) within a larger file
+    // Total data must be >= 16 bytes to pass the initial strlen check
+    $cr3 = pack('N', 12) . 'ftyp' . str_pad('crx ', 20, "\0");
+    assertFalse($handler->detect($cr3));
+});
+
+test('Cr3SignatureHandler detect rejects non-ftyp first box', function () {
+    $handler = new Cr3SignatureHandler();
+    // First box is not ftyp
+    $cr3 = pack('N', 16) . 'xxxx' . 'crx ' . "\x00\x00\x00\x01isom";
+    assertFalse($handler->detect($cr3));
+});
+
+test('Cr3SignatureHandler detect rejects wrong major brand', function () {
+    $handler = new Cr3SignatureHandler();
+    // ftyp with 'mp42' brand instead of 'crx '
+    $cr3 = pack('N', 16) . 'ftyp' . 'mp42' . "\x00\x00\x00\x01isom";
+    assertFalse($handler->detect($cr3));
+});
+
+test('Cr3SignatureHandler find returns null for file without CoC box', function () {
+    $handler = new Cr3SignatureHandler();
+    assertNull($handler->find(createTestCr3()));
+});
+
+echo "\n── ChainOfCustody verifyWithRemoteSalt\n";
+
+test('verifyWithRemoteSalt validates with correct remote salt', function () use ($coc, $aliceId) {
+    $path = copyTif();
+    try {
+        $coc->createSignature($path, $aliceId);
+        $result = $coc->verifyWithRemoteSalt($path, '');
+        assertTrue($result['hash_valid'], 'Empty salt should match no-salt signature');
+        assertNotNull($result['hash']);
+
+        // With a different salt, it should NOT match (since the file was signed with no salt)
+        $result2 = $coc->verifyWithRemoteSalt($path, 'different_salt_value');
+        assertFalse($result2['hash_valid'], 'Different salt should NOT match');
+    } finally {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
+test('verifyWithRemoteSalt returns hash_valid=null for unsigned file', function () use ($coc) {
+    $path = copyTif();
+    try {
+        $result = $coc->verifyWithRemoteSalt($path, '');
+        assertNull($result['hash_valid']);
+        assertNull($result['hash']);
+        assertEquals('', $result['node_id']);
+    } finally {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
+test('checkChainOfCustody returns not-authenticated for unsigned file', function () use ($coc) {
+    $path = copyTif();
+    try {
+        $result = $coc->checkChainOfCustody($path);
+        assertFalse($result['authenticated'], 'Unsigned file should not be authenticated');
+        assertEquals([], $result['chain'], 'Chain should be empty');
+    } finally {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
+test('updateChainOfCustody throws for readable but unsigned original', function () use ($coc, $aliceId) {
+    $origPath = copyTif(); // readable, but NOT signed
+    $modPath  = copyModifiedTif();
+    try {
+        assertThrows(ChainOfCustodyException::class, function () use ($coc, $origPath, $modPath, $aliceId) {
+            $coc->updateChainOfCustody($origPath, $modPath, $aliceId);
+        });
+    } finally {
+        if (is_file($origPath)) {
+            unlink($origPath);
+        }
+        if (is_file($modPath)) {
+            unlink($modPath);
+        }
+    }
+});
+
+test('verifyWithRemoteSalt returns node_id for remote-signed file', function () use ($aliceId) {
+    // Sign the file with a node_id
+    $configPath = __DIR__ . '/_vrs_node_config.php';
+    file_put_contents($configPath, '<?php return [
+        "node_id" => "fedcba9876543210",
+        "host" => "127.0.0.1",
+        "port" => 3306,
+        "dbname" => "chain_of_custody_test",
+        "username" => "coc_test",
+        "password" => "coc_test_pass",
+        "charset" => "utf8mb4",
+    ];');
+
+    $path = copyTif();
+    try {
+        $nodeCoc = new ChainOfCustody($configPath);
+        $nodeCoc->createSignature($path, $aliceId);
+
+        // Verify from a different Coc instance (no node_id)
+        $result = $nodeCoc->verifyWithRemoteSalt($path, '');
+        assertEquals('fedcba9876543210', $result['node_id']);
+    } finally {
+        @unlink($configPath);
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
 // Clean up database after integration tests
 if (isset($testPdo)) {
     $testPdo->exec('DELETE FROM chain_of_custody_signatures');

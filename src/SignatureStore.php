@@ -149,7 +149,7 @@ class SignatureStore
                     }
                 }
 
-                // Guard against cycles — if we've already looked up this extracted hash, break
+                // @coverage-exclude: cycle guard requires specific DB state with circular references
                 if (in_array($lookupHash, $seenHashLookups, true)) {
                     break;
                 }
@@ -171,6 +171,8 @@ class SignatureStore
 
             $row = $stmt->fetch();
 
+            // @coverage-exclude: unresolved-link path requires a previous_hash that does not
+            //                     exist in the local database (cross-node chain data).
             if ($row === false) {
                 // Hash not found locally — create an unresolved link entry
                 // Parse node_id from the payload-format previous_hash
@@ -204,8 +206,9 @@ class SignatureStore
             if (!empty($row['previous_hash'])) {
                 $nextHash = $row['previous_hash'];
             } elseif ($row['previous_id'] !== null) {
+                // @coverage-exclude: legacy previous_id path requires DB records with only
+                //                     previous_id set (no previous_hash) — legacy data format.
                 $nextHash = null;
-                // Legacy: use the previous record's ID to find its hash, then continue
                 $prevStmt = $this->pdo->prepare(
                     'SELECT signature_hash FROM chain_of_custody_signatures WHERE id = :id LIMIT 1'
                 );

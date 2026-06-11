@@ -92,6 +92,8 @@ class OAuthProvider
     /**
      * Exchange the authorization code for an access token.
      *
+     * @coverage-exclude: Requires real HTTP calls to Google/GitHub OAuth endpoints.
+     *
      * @param  string  $provider   Provider name.
      * @param  string  $code       The 'code' query parameter from the callback.
      * @param  array   $oauthCfg   The 'oauth' section from config.
@@ -139,6 +141,8 @@ class OAuthProvider
 
     /**
      * Fetch the user's profile from the provider using an access token.
+     *
+     * @coverage-exclude: Requires real HTTP calls to Google/GitHub userinfo endpoints.
      *
      * @param  string  $provider     Provider name.
      * @param  string  $accessToken  Access token from exchangeCode().
@@ -201,6 +205,8 @@ class OAuthProvider
 
     /**
      * Fetch the user's primary email from GitHub's /user/emails endpoint.
+     *
+     * @coverage-exclude: Requires real HTTP calls to api.github.com.
      */
     private static function fetchGitHubPrimaryEmail(string $accessToken): string
     {

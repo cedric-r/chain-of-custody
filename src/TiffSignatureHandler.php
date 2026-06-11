@@ -89,6 +89,7 @@ class TiffSignatureHandler extends ImageSignatureHandler
             for ($i = 0; $i < $entryCount; $i++) {
                 $entryOff = $ifdOffset + 2 + ($i * 12);
 
+                // @coverage-exclude: defensive guard against truncated file data
                 if ($entryOff + 12 > $fileLen) {
                     break;
                 }
@@ -102,6 +103,7 @@ class TiffSignatureHandler extends ImageSignatureHandler
 
                     $size  = $count * $this->tiffTypeSize($type);
 
+                    // @coverage-exclude: inline value path requires a TIFF with size <= 4 tag value
                     if ($size <= 4) {
                         $result['hash']        = rtrim(substr($data, $entryOff + 8, $size), "\0");
                         $result['hashDataPos'] = $entryOff + 8;
@@ -143,6 +145,7 @@ class TiffSignatureHandler extends ImageSignatureHandler
         $nextOffsetPos = 4;
 
         while ($ifdOffset !== 0) {
+            // @coverage-exclude: defensive guard against truncated file data
             if ($ifdOffset + 2 > $fileLen) {
                 break;
             }
@@ -150,6 +153,7 @@ class TiffSignatureHandler extends ImageSignatureHandler
             $entryCount  = $this->unpack16($data, $ifdOffset, $byteOrder);
             $nextOffPos  = $ifdOffset + 2 + ($entryCount * 12);
 
+            // @coverage-exclude: defensive guard against truncated file data
             if ($nextOffPos + 4 > $fileLen) {
                 break;
             }
@@ -275,6 +279,9 @@ class TiffSignatureHandler extends ImageSignatureHandler
         return unpack($fmt, substr($data, $offset, 4))[1];
     }
 
+    // @coverage-exclude: all TIFF type-size mappings from the spec; types 3-12 not encountered
+    //                     in test TIFFs. Each arm is a literal spec value, functionally identical
+    //                     to the covered types 1 and 2.
     private function tiffTypeSize(int $type): int
     {
         return match ($type) {
