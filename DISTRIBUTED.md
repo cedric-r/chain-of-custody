@@ -266,3 +266,7 @@ node to the rest of the system. Internally, it can be a cluster of any size.
   signed and cached by proxies, reducing load on popular nodes. The cache
   invalidation protocol needs to be specified (time-based TTL, or explicit
   revocation via the node's /.well-known endpoint).
+
+## License
+
+GNU General Public License v3.0 or later.

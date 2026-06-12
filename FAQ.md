@@ -11,3 +11,7 @@
 - We can't stop that. The workflow I'd follow is as follows:
 - Every time I plan to publish a photo or send it a photo for publication, sign the original raw file.
 - Then when I send it or publish it online, sign the version I'm sending before sending it. That way, it is possible to trace any version of the photo to your original.
+
+## License
+
+GNU General Public License v3.0 or later.
